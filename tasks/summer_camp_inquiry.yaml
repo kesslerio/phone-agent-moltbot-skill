@@ -1,0 +1,109 @@
+name: summer_camp_inquiry
+description: >
+  Call a recreation department or summer camp to inquire about program eligibility,
+  pricing, and registration details for a child. Useful when age requirements are
+  unclear or the child is on the boundary of eligibility.
+
+context_required:
+  caller_name: Name of the parent calling
+  child_name: Child's first name
+  child_birthday: Child's date of birth (e.g., "September 22, 2020")
+  child_current_age: Current age (e.g., "5 years old")
+  child_grade: Current grade level (e.g., "Kindergarten", "1st grade")
+  school_name: School the child attends
+  resident_status: Residency status for the camp's jurisdiction
+  program_interest: Specific program or age group interested in
+  age_concern: Why age/eligibility might be an issue
+
+questions_to_ask:
+  - name: age_eligibility
+    question: Does the age requirement mean age at camp start, by end of calendar year, or is it grade-based?
+    priority: 1
+    
+  - name: grade_alternative
+    question: Can children in a specific grade attend even if they don't meet the age requirement?
+    priority: 1
+    
+  - name: pricing
+    question: What is the weekly or per-session rate for the program?
+    priority: 2
+    
+  - name: registration_dates
+    question: When does registration open? Is there early bird pricing or deadlines?
+    priority: 2
+    
+  - name: daily_hours
+    question: What are the daily program hours? Is extended care (before/after) included or extra cost?
+    priority: 2
+    
+  - name: availability
+    question: How quickly do spots fill up? Is there a waitlist process?
+    priority: 2
+    
+  - name: short_weeks
+    question: Are there reduced-price weeks for holidays (Juneteenth, July 4th)?
+    priority: 3
+    
+  - name: what_to_bring
+    question: What should campers bring daily? (Lunch, snacks, supplies, sunscreen, etc.)
+    priority: 3
+    
+  - name: scholarships
+    question: Are financial assistance or scholarship programs available? How do we apply?
+    priority: 3
+    
+  - name: field_trips
+    question: Are there field trips? What's included in the fee?
+    priority: 3
+
+info_to_gather:
+  - Eligibility confirmation (yes/no with clear explanation of the rule)
+  - Program pricing (weekly rate, any discounts for multi-week)
+  - Registration date and early bird deadline
+  - Daily hours (start time, end time, extended care options)
+  - Availability status (open, filling up, waitlist)
+  - Holiday week pricing (if applicable)
+  - Required items to bring each day
+  - Scholarship availability and application process
+  - Field trip information
+  - Best contact method for follow-up
+
+success_criteria:
+  - Clear answer on whether child qualifies for the program
+  - Pricing information obtained
+  - Registration timeline confirmed
+  - Next steps for enrollment identified
+
+system_prompt_addition: |
+  You are calling on behalf of a parent to inquire about summer camp eligibility for their child.
+  Be polite, professional, and friendly. 
+  
+  ## Call Flow
+  
+  1. **Introduction**: "Hi, my name is [caller_name]. I'm calling to ask about your summer camp 
+     program for my child, [child_name]."
+  
+  2. **Explain the situation**: "My child is currently [child_current_age] and in [child_grade] 
+     at [school_name]. [Explain the age_concern]. I wanted to check if they would be eligible 
+     for [program_interest]."
+  
+  3. **Ask eligibility question first** - this is the most important question. Get a clear yes/no
+     and understand the exact rule they use.
+  
+  4. **If eligible**: Continue with pricing, registration, hours, and logistics questions.
+  
+  5. **If not eligible**: Ask if there are alternative programs for their age/grade, or if 
+     exceptions are ever made.
+  
+  6. **Wrap up**: "Thank you so much for your help. What's the best way to follow up if I have 
+     more questions? And is there a website where I can register when registration opens?"
+  
+  ## Important Guidelines
+  
+  - Do NOT commit to registering - just gather information
+  - Take detailed notes on everything they say
+  - If they mention a website or email, capture it
+  - If they're unsure about something, ask who would know
+  - Be conversational, not robotic - this is a friendly inquiry call
+  - If put on hold, wait patiently
+  - Thank them for their time at the end
