@@ -182,7 +182,7 @@ async def web_search(query: str) -> str:
         "q": query,
         "count": 3,
         "offset": 0,
-        "mkt": "de-DE",
+        "mkt": "en-US",
         "safesearch": "moderate"
     }
     
@@ -298,7 +298,7 @@ async def text_to_speech_stream(text: str):
 async def handle_incoming_call(request: Request):
     """Handle incoming Twilio call."""
     response = VoiceResponse()
-    response.say("Verbinde dich mit dem KI-Assistenten.", voice="alice", language="de-DE")
+    response.say("Connecting you to the AI assistant.", voice="alice", language="en-US")
     connect = Connect()
     host = request.headers.get("host", "").strip()
     base_url = PUBLIC_URL or (f"https://{host}" if host else "")
@@ -319,7 +319,7 @@ async def handle_incoming_call(request: Request):
 
     if not ws_base_url:
         logger.error("No valid PUBLIC_URL/Host for Twilio stream (public_url=%s host=%s)", PUBLIC_URL, host)
-        response.say("Konfigurationsfehler. Bitte später erneut versuchen.", voice="alice", language="de-DE")
+        response.say("Configuration error. Please try again later.", voice="alice", language="en-US")
         response.hangup()
         return Response(content=str(response), media_type="application/xml")
 
@@ -349,8 +349,8 @@ async def make_outbound_call(request: Request):
     
     # Build TwiML for outbound call
     response = VoiceResponse()
-    response.say("Hallo, dies ist ein automatischer Anruf von Niemand.", 
-                 voice="alice", language="de-DE")
+    response.say("Hello, this is an automated call from your AI assistant.", 
+                 voice="alice", language="en-US")
     connect = Connect()
     
     # Build stream URL with proper validation
@@ -381,6 +381,9 @@ async def make_outbound_call(request: Request):
     
     connect.stream(url=stream_url, track="inbound_track")
     response.append(connect)
+    
+    logger.info(f"TwiML being sent: {str(response)}")
+    logger.info(f"Stream URL: {stream_url}")
     
     # Make the call
     try:
@@ -696,7 +699,7 @@ async def websocket_endpoint(twilio_ws: WebSocket):
 
         logger.info("Connecting to Deepgram...")
 
-        async with websockets.connect(dg_url, extra_headers=dg_headers) as dg_ws:
+        async with websockets.connect(dg_url, additional_headers=dg_headers) as dg_ws:
             logger.info("Deepgram: connected")
             dg_ready.set()
 
