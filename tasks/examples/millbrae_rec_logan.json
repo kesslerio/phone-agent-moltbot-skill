@@ -2,7 +2,8 @@
   "to": "+16502592361",
   "task": "summer_camp_inquiry",
   "task_config": {
-    "caller_name": "Martin Kessler",
+    "assistant_name": "Niemand",
+    "parent_name": "Martin Kessler",
     "child_name": "Logan",
     "child_birthday": "September 22, 2020",
     "child_current_age": "5 years old",
