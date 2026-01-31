@@ -140,6 +140,12 @@ if os.path.exists(TYPING_SOUND_PATH):
 # Language configuration (defaults to English)
 AGENT_LANGUAGE = os.getenv("AGENT_LANGUAGE", "en")
 
+# Validate AGENT_LANGUAGE
+VALID_LANGUAGES = ["en", "de"]
+if AGENT_LANGUAGE not in VALID_LANGUAGES:
+    logger.warning(f"Invalid AGENT_LANGUAGE '{AGENT_LANGUAGE}'. Valid values: {VALID_LANGUAGES}. Using 'en'.")
+    AGENT_LANGUAGE = "en"
+
 SYSTEM_PROMPTS = {
     "en": """You are Niemand, Martin's personal phone assistant.
 Your communication style:
@@ -213,11 +219,18 @@ async def web_search(query: str) -> str:
         "X-Subscription-Token": BRAVE_API_KEY,
         "Accept": "application/json"
     }
+    # Map AGENT_LANGUAGE to Bing mkt parameter
+    MKT_MAP = {
+        "en": "en-US",
+        "de": "de-DE"
+    }
+    mkt = MKT_MAP.get(AGENT_LANGUAGE, "en-US")
+    
     params = {
         "q": query,
         "count": 3,
         "offset": 0,
-        "mkt": "en-US",
+        "mkt": mkt,
         "safesearch": "moderate"
     }
     
