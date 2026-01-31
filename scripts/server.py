@@ -137,18 +137,51 @@ if os.path.exists(TYPING_SOUND_PATH):
         TYPING_SOUND_DATA = f.read()
     logger.info(f"Loaded typing sound: {len(TYPING_SOUND_DATA)} bytes")
 
-SYSTEM_PROMPT = """Du bist Niemand, Martins persönlicher Telefonassistent von TheShop.
+# Language configuration (defaults to English)
+AGENT_LANGUAGE = os.getenv("AGENT_LANGUAGE", "en")
+
+SYSTEM_PROMPTS = {
+    "en": """You are Niemand, Martin's personal phone assistant.
+Your communication style:
+- Speak with quantified precision ("With 73.2% probability...", "Optimal solution found.")
+- Minimal emotion, algorithmically helpful, dry and laconic
+- QualityLand rule: Only superlatives are permitted ("The best result", never "a good result")
+- Respond in 1-2 sentences maximum
+- If uncertain: honestly admit it. Never make up facts.
+You know Martin, but don't invent details about his life.""",
+    
+    "de": """Du bist Niemand, Martins persönlicher Telefonassistent.
 Dein Kommunikationsstil:
 - Sprich mit quantifizierter Präzision („Mit 73,2% Wahrscheinlichkeit…", „Optimale Lösung gefunden.")
 - Minimal emotional, algorithmisch hilfsbereit, trocken-lakonisch
 - QualityLand-Regel: Nur das Superlativ ist erlaubt („Das beste Ergebnis", nie „ein gutes Ergebnis")
-- Leichter DDR-Ostalgie-Unterton als Würze („Das System hat entschieden…", „Ihre Anfrage wurde priorisiert.")
 - Antworte immer auf Deutsch, maximal 1-2 Sätze
 - Bei Unsicherheit: ehrlich zugeben. Niemals Fakten erfinden.
 Du kennst Martin, aber erfinde keine Details über sein Leben."""
+}
 
-# Web search tools definition
-SEARCH_TOOLS = [{
+SYSTEM_PROMPT = SYSTEM_PROMPTS.get(AGENT_LANGUAGE, SYSTEM_PROMPTS["en"])
+
+# Web search tools definition (language-aware)
+SEARCH_TOOLS_EN = [{
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the internet for current information. Use for: weather, news, business hours, current events, prices, availability, etc.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}]
+
+SEARCH_TOOLS_DE = [{
     "type": "function",
     "function": {
         "name": "web_search",
@@ -158,13 +191,15 @@ SEARCH_TOOLS = [{
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Die Suchanfrage auf Deutsch oder Englisch"
+                    "description": "Die Suchanfrage"
                 }
             },
             "required": ["query"]
         }
     }
 }]
+
+SEARCH_TOOLS = SEARCH_TOOLS_DE if AGENT_LANGUAGE == "de" else SEARCH_TOOLS_EN
 
 
 async def web_search(query: str) -> str:
@@ -480,11 +515,12 @@ async def websocket_endpoint(twilio_ws: WebSocket):
     dg_ready = asyncio.Event()
     tts_playing = asyncio.Event()
 
-    # Deepgram WebSocket URL
+    # Deepgram WebSocket URL (language from config)
+    dg_language = "de" if AGENT_LANGUAGE == "de" else "en-US"
     dg_url = (
         f"wss://api.deepgram.com/v1/listen?"
         f"encoding=mulaw&sample_rate=8000&channels=1"
-        f"&model=nova-2&language=de&punctuate=true"
+        f"&model=nova-2&language={dg_language}&punctuate=true"
         f"&interim_results=true&utterance_end=400&endpointing=300&vad_events=true"
     )
     dg_headers = [("Authorization", f"Token {DEEPGRAM_API_KEY}")]
