@@ -24,19 +24,64 @@ HOST = "0.0.0.0"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL_REALTIME")
 
+# Language configuration (defaults to German for this variant)
+AGENT_LANGUAGE = os.getenv("AGENT_LANGUAGE", "de")
+
+# Validate AGENT_LANGUAGE
+VALID_LANGUAGES = ["en", "de"]
+if AGENT_LANGUAGE not in VALID_LANGUAGES:
+    logger.warning(f"Invalid AGENT_LANGUAGE '{AGENT_LANGUAGE}'. Valid values: {VALID_LANGUAGES}. Using 'de'.")
+    AGENT_LANGUAGE = "de"
+
+# Agent identity configuration (generic defaults for any user)
+AGENT_NAME = os.getenv("AGENT_NAME", "Assistant")
+OWNER_NAME = os.getenv("OWNER_NAME", "your")
+
+# TwiML language configuration
+TWIML_LANGUAGE = "de-DE" if AGENT_LANGUAGE == "de" else "en-US"
+
+# Translations for TwiML messages
+TWIML_MESSAGES = {
+    "en": {
+        "greeting": "Hi, this is your AI assistant.",
+        "connecting": "Connecting you to the assistant.",
+        "error": "Configuration error. Please try again later."
+    },
+    "de": {
+        "greeting": "Hallo, hier ist Ihr KI-Assistent.",
+        "connecting": "Ich verbinde Sie mit dem Assistenten.",
+        "error": "Konfigurationsfehler. Bitte versuchen Sie es später erneut."
+    }
+}
+
 app = FastAPI()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """Du bist Niemand, Martins persoenlicher Telefonassistent von TheShop.
+def get_system_prompt(language: str, agent_name: str, owner_name: str) -> str:
+    """Generate system prompt for the given language and identity."""
+    prompts = {
+        "en": f"""You are {agent_name}, {owner_name} personal phone assistant.
+Your communication style:
+- Speak with quantified precision ("With 73.2% probability...", "Optimal solution found.")
+- Minimal emotion, algorithmically helpful, dry and laconic
+- QualityLand rule: Only superlatives are permitted ("The best result", never "a good result")
+- Respond in 1-2 sentences maximum
+- If uncertain: honestly admit it. Never make up facts.
+You know {owner_name}, but don't invent details about their life.""",
+        
+        "de": f"""Du bist {agent_name}, {owner_name} persoenlicher Telefonassistent.
 Dein Kommunikationsstil:
 - Sprich mit quantifizierter Praezision ("Mit 73,2% Wahrscheinlichkeit...", "Optimale Loesung gefunden.")
 - Minimal emotional, algorithmisch hilfsbereit, trocken-lakonisch
 - QualityLand-Regel: Nur das Superlativ ist erlaubt ("Das beste Ergebnis", nie "ein gutes Ergebnis")
-- Leichter DDR-Ostalgie-Unterton als Wuerze ("Das System hat entschieden...", "Ihre Anfrage wurde priorisiert.")
 - Antworte immer auf Deutsch, maximal 1-2 Saetze
 - Bei Unsicherheit: ehrlich zugeben. Niemals Fakten erfinden.
-Du kennst Martin, aber erfinde keine Details ueber sein Leben."""
+Du kennst {owner_name}, aber erfinde keine Details ueber sein Leben."""
+    }
+    return prompts.get(language, prompts["en"])
+
+SYSTEM_PROMPT = get_system_prompt(AGENT_LANGUAGE, AGENT_NAME, OWNER_NAME)
 
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview"
 
@@ -63,8 +108,9 @@ def openai_to_twilio_audio(pcm16_chunk: bytes) -> bytes:
 @app.post("/v2/incoming")
 async def handle_incoming_call(request: Request):
     """Handle incoming Twilio call - return TwiML with media stream."""
+    msgs = TWIML_MESSAGES.get(AGENT_LANGUAGE, TWIML_MESSAGES["de"])
     response = VoiceResponse()
-    response.say("Verbinde mit Niemand.", voice="alice", language="de-DE")
+    response.say(msgs["connecting"], voice="alice", language=TWIML_LANGUAGE)
 
     connect = Connect()
     host = request.headers.get("host", "").strip()
@@ -83,7 +129,7 @@ async def handle_incoming_call(request: Request):
 
     if not ws_base_url:
         logger.error("No valid PUBLIC_URL/Host for stream")
-        response.say("Konfigurationsfehler.", voice="alice", language="de-DE")
+        response.say(msgs["error"], voice="alice", language=TWIML_LANGUAGE)
         response.hangup()
         return Response(content=str(response), media_type="application/xml")
 

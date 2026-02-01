@@ -346,3 +346,11 @@ Contributions welcome! Please:
 - MCP Server: [Deepgram](https://deepgram.com/) | [OpenAI](https://openai.com/) | [ElevenLabs](https://elevenlabs.io/)
 - Twilio Docs: [Voice API](https://www.twilio.com/docs/voice)
 - Moltbot: [Documentation](https://moltbot.io/)
+
+## Requirements
+
+- `ffmpeg` must be in PATH (for converting ElevenLabs MP3 to Twilio mu-law audio)
+- If running as a systemd service, ensure PATH includes ffmpeg location:
+  ```ini
+  Environment=PATH=/home/art/.nix-profile/bin:/usr/bin:/bin
+  ```

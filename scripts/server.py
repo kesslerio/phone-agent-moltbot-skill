@@ -137,34 +137,101 @@ if os.path.exists(TYPING_SOUND_PATH):
         TYPING_SOUND_DATA = f.read()
     logger.info(f"Loaded typing sound: {len(TYPING_SOUND_DATA)} bytes")
 
-SYSTEM_PROMPT = """Du bist Niemand, Martins persönlicher Telefonassistent von TheShop.
+# Language configuration (defaults to English)
+AGENT_LANGUAGE = os.getenv("AGENT_LANGUAGE", "en")
+
+# Validate AGENT_LANGUAGE
+VALID_LANGUAGES = ["en", "de"]
+if AGENT_LANGUAGE not in VALID_LANGUAGES:
+    logger.warning(f"Invalid AGENT_LANGUAGE '{AGENT_LANGUAGE}'. Valid values: {VALID_LANGUAGES}. Using 'en'.")
+    AGENT_LANGUAGE = "en"
+
+# Agent identity configuration (generic defaults for any user)
+AGENT_NAME = os.getenv("AGENT_NAME", "Assistant")
+OWNER_NAME = os.getenv("OWNER_NAME", "your")
+
+# TwiML language configuration
+TWIML_LANGUAGE = "de-DE" if AGENT_LANGUAGE == "de" else "en-US"
+
+# Translations for TwiML messages
+TWIML_MESSAGES = {
+    "en": {
+        "greeting": "Hi, this is your AI assistant.",
+        "connecting": "Connecting you to the assistant.",
+        "error": "Configuration error. Please try again later."
+    },
+    "de": {
+        "greeting": "Hallo, hier ist Ihr KI-Assistent.",
+        "connecting": "Ich verbinde Sie mit dem Assistenten.",
+        "error": "Konfigurationsfehler. Bitte versuchen Sie es später erneut."
+    }
+}
+
+# Market mapping for web search (Bing API)
+MKT_MAP = {
+    "en": "en-US",
+    "de": "de-DE"
+}
+
+def get_system_prompt(language: str, agent_name: str, owner_name: str) -> str:
+    """Generate system prompt for the given language and identity."""
+    prompts = {
+        "en": f"""You are {agent_name}, {owner_name} personal phone assistant.
+Your communication style:
+- Speak with quantified precision ("With 73.2% probability...", "Optimal solution found.")
+- Minimal emotion, algorithmically helpful, dry and laconic
+- QualityLand rule: Only superlatives are permitted ("The best result", never "a good result")
+- Respond in 1-2 sentences maximum
+- If uncertain: honestly admit it. Never make up facts.
+You know {owner_name}, but don't invent details about their life.""",
+        
+        "de": f"""Du bist {agent_name}, {owner_name} persönlicher Telefonassistent.
 Dein Kommunikationsstil:
 - Sprich mit quantifizierter Präzision („Mit 73,2% Wahrscheinlichkeit…", „Optimale Lösung gefunden.")
 - Minimal emotional, algorithmisch hilfsbereit, trocken-lakonisch
 - QualityLand-Regel: Nur das Superlativ ist erlaubt („Das beste Ergebnis", nie „ein gutes Ergebnis")
-- Leichter DDR-Ostalgie-Unterton als Würze („Das System hat entschieden…", „Ihre Anfrage wurde priorisiert.")
 - Antworte immer auf Deutsch, maximal 1-2 Sätze
 - Bei Unsicherheit: ehrlich zugeben. Niemals Fakten erfinden.
-Du kennst Martin, aber erfinde keine Details über sein Leben."""
-
-# Web search tools definition
-SEARCH_TOOLS = [{
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "Suche im Internet nach aktuellen Informationen. Nutze dies bei Fragen zu: Wetter, Nachrichten, Öffnungszeiten, aktuelle Ereignisse, Preise, Verfügbarkeiten, etc.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Die Suchanfrage auf Deutsch oder Englisch"
-                }
-            },
-            "required": ["query"]
-        }
+Du kennst {owner_name}, aber erfinde keine Details über ihr Leben."""
     }
-}]
+    return prompts.get(language, prompts["en"])
+
+SYSTEM_PROMPT = get_system_prompt(AGENT_LANGUAGE, AGENT_NAME, OWNER_NAME)
+
+# Web search tools definition (DRY with language lookup)
+SEARCH_TOOL_DESCRIPTIONS = {
+    "en": {
+        "description": "Search the internet for current information. Use for: weather, news, business hours, current events, prices, availability, etc.",
+        "query_desc": "The search query"
+    },
+    "de": {
+        "description": "Suche im Internet nach aktuellen Informationen. Nutze dies bei Fragen zu: Wetter, Nachrichten, Öffnungszeiten, aktuelle Ereignisse, Preise, Verfügbarkeiten, etc.",
+        "query_desc": "Die Suchanfrage"
+    }
+}
+
+def get_search_tools(language: str) -> list:
+    """Get search tools for the given language."""
+    desc = SEARCH_TOOL_DESCRIPTIONS.get(language, SEARCH_TOOL_DESCRIPTIONS["en"])
+    return [{
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": desc["description"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": desc["query_desc"]
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }]
+
+SEARCH_TOOLS = get_search_tools(AGENT_LANGUAGE)
 
 
 async def web_search(query: str) -> str:
@@ -178,11 +245,14 @@ async def web_search(query: str) -> str:
         "X-Subscription-Token": BRAVE_API_KEY,
         "Accept": "application/json"
     }
+    # Use module-level MKT_MAP for language-specific market
+    mkt = MKT_MAP.get(AGENT_LANGUAGE, "en-US")
+    
     params = {
         "q": query,
         "count": 3,
         "offset": 0,
-        "mkt": "de-DE",
+        "mkt": mkt,
         "safesearch": "moderate"
     }
     
@@ -297,8 +367,9 @@ async def text_to_speech_stream(text: str):
 @app.post("/v1/incoming")
 async def handle_incoming_call(request: Request):
     """Handle incoming Twilio call."""
+    msgs = TWIML_MESSAGES.get(AGENT_LANGUAGE, TWIML_MESSAGES["en"])
     response = VoiceResponse()
-    response.say("Verbinde dich mit dem KI-Assistenten.", voice="alice", language="de-DE")
+    response.say(msgs["connecting"], voice="alice", language=TWIML_LANGUAGE)
     connect = Connect()
     host = request.headers.get("host", "").strip()
     base_url = PUBLIC_URL or (f"https://{host}" if host else "")
@@ -319,7 +390,7 @@ async def handle_incoming_call(request: Request):
 
     if not ws_base_url:
         logger.error("No valid PUBLIC_URL/Host for Twilio stream (public_url=%s host=%s)", PUBLIC_URL, host)
-        response.say("Konfigurationsfehler. Bitte später erneut versuchen.", voice="alice", language="de-DE")
+        response.say(msgs["error"], voice="alice", language=TWIML_LANGUAGE)
         response.hangup()
         return Response(content=str(response), media_type="application/xml")
 
@@ -348,9 +419,9 @@ async def make_outbound_call(request: Request):
                        status_code=400, media_type="application/json")
     
     # Build TwiML for outbound call
+    msgs = TWIML_MESSAGES.get(AGENT_LANGUAGE, TWIML_MESSAGES["en"])
     response = VoiceResponse()
-    response.say("Hallo, dies ist ein automatischer Anruf von Niemand.", 
-                 voice="alice", language="de-DE")
+    response.say(msgs["greeting"], voice="alice", language=TWIML_LANGUAGE)
     connect = Connect()
     
     # Build stream URL with proper validation
@@ -381,6 +452,9 @@ async def make_outbound_call(request: Request):
     
     connect.stream(url=stream_url, track="inbound_track")
     response.append(connect)
+    
+    logger.info(f"TwiML being sent: {str(response)}")
+    logger.info(f"Stream URL: {stream_url}")
     
     # Make the call
     try:
@@ -477,11 +551,12 @@ async def websocket_endpoint(twilio_ws: WebSocket):
     dg_ready = asyncio.Event()
     tts_playing = asyncio.Event()
 
-    # Deepgram WebSocket URL
+    # Deepgram WebSocket URL (language from config)
+    dg_language = "de" if AGENT_LANGUAGE == "de" else "en-US"
     dg_url = (
         f"wss://api.deepgram.com/v1/listen?"
         f"encoding=mulaw&sample_rate=8000&channels=1"
-        f"&model=nova-2&language=de&punctuate=true"
+        f"&model=nova-2&language={dg_language}&punctuate=true"
         f"&interim_results=true&utterance_end=400&endpointing=300&vad_events=true"
     )
     dg_headers = [("Authorization", f"Token {DEEPGRAM_API_KEY}")]
@@ -696,7 +771,7 @@ async def websocket_endpoint(twilio_ws: WebSocket):
 
         logger.info("Connecting to Deepgram...")
 
-        async with websockets.connect(dg_url, extra_headers=dg_headers) as dg_ws:
+        async with websockets.connect(dg_url, additional_headers=dg_headers) as dg_ws:
             logger.info("Deepgram: connected")
             dg_ready.set()
 
