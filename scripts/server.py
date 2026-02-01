@@ -8,6 +8,8 @@ import logging
 import websockets
 import websockets.exceptions
 from urllib.parse import urlsplit
+from string import Template
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, Request, Response
@@ -179,6 +181,52 @@ MKT_MAP = {
     "de": "de-DE"
 }
 
+class SystemPromptError(Exception):
+    """Custom exception for system prompt loading errors."""
+    pass
+
+
+def _handle_prompt_error(msg: str, required: bool) -> None:
+    """Handle prompt loading errors consistently.
+    
+    Logs the error and either raises SystemPromptError or returns None based on required flag.
+    """
+    logger.error(msg)
+    if required:
+        raise SystemPromptError(msg)
+
+
+def _validate_prompt_file_path(file_path: str) -> Path:
+    """Validate that the prompt file path is within allowed directories.
+    
+    Args:
+        file_path: The path to validate
+        
+    Returns:
+        Resolved Path object
+        
+    Raises:
+        ValueError: If path is outside allowed directories
+    """
+    allowed_dirs = [Path.home() / ".config" / "moltbot", Path("/etc/moltbot")]
+    
+    # Resolve the path to normalize it (handles .., symlinks, etc.)
+    resolved_path = Path(file_path).resolve()
+    
+    # Check if the resolved path is within any allowed directory
+    for allowed_dir in allowed_dirs:
+        try:
+            resolved_path.relative_to(allowed_dir.resolve())
+            return resolved_path
+        except ValueError:
+            continue
+    
+    raise ValueError(
+        f"SYSTEM_PROMPT_FILE ({file_path}) is outside allowed directories: "
+        f"{[str(d) for d in allowed_dirs]}"
+    )
+
+
 def get_builtin_system_prompt(language: str, agent_name: str, owner_name: str) -> str:
     """Generate built-in system prompt for the given language and identity."""
     prompts = {
@@ -208,37 +256,56 @@ def load_system_prompt() -> str:
     # Priority 1: Load from file
     if SYSTEM_PROMPT_FILE:
         try:
-            with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
+            # Validate path is within allowed directories
+            validated_path = _validate_prompt_file_path(SYSTEM_PROMPT_FILE)
+            
+            with open(validated_path, "r", encoding="utf-8") as f:
                 prompt = f.read().strip()
             
             # Validate prompt content is not empty
             if not prompt:
-                logger.error(f"SYSTEM_PROMPT_FILE is empty: {SYSTEM_PROMPT_FILE}")
-                if SYSTEM_PROMPT_FILE_REQUIRED:
-                    sys.exit(1)
-                # Fall through to next priority
+                _handle_prompt_error(
+                    f"SYSTEM_PROMPT_FILE is empty: {SYSTEM_PROMPT_FILE}",
+                    SYSTEM_PROMPT_FILE_REQUIRED
+                )
             else:
-                # Apply template variable substitution
-                try:
-                    prompt = prompt.format(
-                        agent_name=AGENT_NAME,
-                        owner_name=OWNER_NAME,
-                        language=AGENT_LANGUAGE
-                    )
-                except (KeyError, ValueError) as e:
-                    logger.warning(f"Template substitution failed in system prompt: {e}")
+                # Apply template variable substitution using safe_substitute
+                template = Template(prompt)
+                substituted = template.safe_substitute(
+                    agent_name=AGENT_NAME,
+                    owner_name=OWNER_NAME,
+                    language=AGENT_LANGUAGE
+                )
+                
+                # Check for unsubstituted variables
+                if "${" in substituted:
+                    unsubstituted_vars = []
+                    import re
+                    for match in re.finditer(r'\$\{(\w+)\}', substituted):
+                        unsubstituted_vars.append(match.group(1))
+                    
+                    if unsubstituted_vars:
+                        msg = f"Template substitution failed - unsubstituted variables: {unsubstituted_vars}"
+                        if SYSTEM_PROMPT_FILE_REQUIRED:
+                            _handle_prompt_error(msg, SYSTEM_PROMPT_FILE_REQUIRED)
+                        else:
+                            logger.warning(f"{msg} - using partial substitution")
                 
                 logger.info(f"Loaded system prompt from file: {SYSTEM_PROMPT_FILE}")
-                return prompt
+                return substituted
                 
         except FileNotFoundError:
-            logger.error(f"SYSTEM_PROMPT_FILE not found: {SYSTEM_PROMPT_FILE}")
-            if SYSTEM_PROMPT_FILE_REQUIRED:
-                sys.exit(1)
+            _handle_prompt_error(
+                f"SYSTEM_PROMPT_FILE not found: {SYSTEM_PROMPT_FILE}",
+                SYSTEM_PROMPT_FILE_REQUIRED
+            )
         except IOError as e:
-            logger.error(f"Error reading SYSTEM_PROMPT_FILE: {e}")
-            if SYSTEM_PROMPT_FILE_REQUIRED:
-                sys.exit(1)
+            _handle_prompt_error(
+                f"Error reading SYSTEM_PROMPT_FILE: {e}",
+                SYSTEM_PROMPT_FILE_REQUIRED
+            )
+        except ValueError as e:
+            _handle_prompt_error(str(e), SYSTEM_PROMPT_FILE_REQUIRED)
 
     # Priority 2: Use env var
     if SYSTEM_PROMPT_ENV:
@@ -250,7 +317,12 @@ def load_system_prompt() -> str:
     return get_builtin_system_prompt(AGENT_LANGUAGE, AGENT_NAME, OWNER_NAME)
 
 
-SYSTEM_PROMPT = load_system_prompt()
+# Load system prompt with error handling at module level
+try:
+    SYSTEM_PROMPT = load_system_prompt()
+except SystemPromptError as e:
+    logger.critical(f"Failed to load system prompt: {e}")
+    sys.exit(1)
 
 # Web search tools definition (DRY with language lookup)
 SEARCH_TOOL_DESCRIPTIONS = {
