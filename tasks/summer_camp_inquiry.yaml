@@ -5,10 +5,10 @@ description: >
   unclear or the child is on the boundary of eligibility.
 
 context_required:
-  assistant_name: Name of the AI assistant making the call (e.g., "Niemand")
+  assistant_name: Name of the AI assistant making the call (e.g., "Alex")
   parent_name: Name of the parent on whose behalf you're calling
   child_name: Child's first name
-  child_birthday: Child's date of birth (e.g., "September 22, 2020")
+  child_birthday: Child's date of birth (e.g., "August 15, 2019")
   child_current_age: Current age (e.g., "5 years old")
   child_grade: Current grade level (e.g., "Kindergarten", "1st grade")
   school_name: School the child attends
