@@ -86,6 +86,22 @@ export PUBLIC_URL="https://your-ngrok-url.ngrok.io"  # For webhooks
 
 # Voice Customization (optional)
 export ELEVENLABS_VOICE_ID="onwK4e9ZLuTAKqWW03F9"  # Daniel voice
+
+# System Prompt Configuration (optional)
+export SYSTEM_PROMPT_FILE="/path/to/custom-prompt.txt"  # Load prompt from file
+export SYSTEM_PROMPT_FILE_REQUIRED="true"  # Exit if file missing (default: false)
+export SYSTEM_PROMPT="Custom prompt text here"  # Override built-in prompt
+```
+
+**Template Variables:** When using `SYSTEM_PROMPT_FILE`, you can include these placeholders:
+- `{agent_name}` - Replaced with `AGENT_NAME` env var (default: "Assistant")
+- `{owner_name}` - Replaced with `OWNER_NAME` env var (default: "your")
+- `{language}` - Replaced with `AGENT_LANGUAGE` env var (default: "en")
+
+Example custom prompt file:
+```
+You are {agent_name}, {owner_name} personal assistant.
+Speak in {language} with precision and clarity.
 ```
 
 Or add to `~/.moltbot/.env` or `~/.clawdbot/.env`:

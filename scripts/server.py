@@ -1,5 +1,6 @@
 #!/home/art/.local/venvs/phone-agent/bin/python3
 import os
+import sys
 import json
 import asyncio
 import base64
@@ -169,6 +170,7 @@ TWIML_MESSAGES = {
 
 # System prompt configuration (priority: file > env var > built-in default)
 SYSTEM_PROMPT_FILE = os.getenv("SYSTEM_PROMPT_FILE")
+SYSTEM_PROMPT_FILE_REQUIRED = os.getenv("SYSTEM_PROMPT_FILE_REQUIRED", "false").lower() == "true"
 SYSTEM_PROMPT_ENV = os.getenv("SYSTEM_PROMPT")
 
 # Market mapping for web search (Bing API)
@@ -208,12 +210,35 @@ def load_system_prompt() -> str:
         try:
             with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
                 prompt = f.read().strip()
-            logger.info(f"Loaded system prompt from file: {SYSTEM_PROMPT_FILE}")
-            return prompt
+            
+            # Validate prompt content is not empty
+            if not prompt:
+                logger.error(f"SYSTEM_PROMPT_FILE is empty: {SYSTEM_PROMPT_FILE}")
+                if SYSTEM_PROMPT_FILE_REQUIRED:
+                    sys.exit(1)
+                # Fall through to next priority
+            else:
+                # Apply template variable substitution
+                try:
+                    prompt = prompt.format(
+                        agent_name=AGENT_NAME,
+                        owner_name=OWNER_NAME,
+                        language=AGENT_LANGUAGE
+                    )
+                except (KeyError, ValueError) as e:
+                    logger.warning(f"Template substitution failed in system prompt: {e}")
+                
+                logger.info(f"Loaded system prompt from file: {SYSTEM_PROMPT_FILE}")
+                return prompt
+                
         except FileNotFoundError:
             logger.error(f"SYSTEM_PROMPT_FILE not found: {SYSTEM_PROMPT_FILE}")
+            if SYSTEM_PROMPT_FILE_REQUIRED:
+                sys.exit(1)
         except IOError as e:
             logger.error(f"Error reading SYSTEM_PROMPT_FILE: {e}")
+            if SYSTEM_PROMPT_FILE_REQUIRED:
+                sys.exit(1)
 
     # Priority 2: Use env var
     if SYSTEM_PROMPT_ENV:
