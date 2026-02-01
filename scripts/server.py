@@ -146,66 +146,92 @@ if AGENT_LANGUAGE not in VALID_LANGUAGES:
     logger.warning(f"Invalid AGENT_LANGUAGE '{AGENT_LANGUAGE}'. Valid values: {VALID_LANGUAGES}. Using 'en'.")
     AGENT_LANGUAGE = "en"
 
-SYSTEM_PROMPTS = {
-    "en": """You are Niemand, Martin's personal phone assistant.
+# Agent identity configuration (generic defaults for any user)
+AGENT_NAME = os.getenv("AGENT_NAME", "Assistant")
+OWNER_NAME = os.getenv("OWNER_NAME", "your")
+
+# TwiML language configuration
+TWIML_LANGUAGE = "de-DE" if AGENT_LANGUAGE == "de" else "en-US"
+
+# Translations for TwiML messages
+TWIML_MESSAGES = {
+    "en": {
+        "greeting": "Hi, this is your AI assistant.",
+        "connecting": "Connecting you to the assistant.",
+        "error": "Configuration error. Please try again later."
+    },
+    "de": {
+        "greeting": "Hallo, hier ist Ihr KI-Assistent.",
+        "connecting": "Ich verbinde Sie mit dem Assistenten.",
+        "error": "Konfigurationsfehler. Bitte versuchen Sie es später erneut."
+    }
+}
+
+# Market mapping for web search (Bing API)
+MKT_MAP = {
+    "en": "en-US",
+    "de": "de-DE"
+}
+
+def get_system_prompt(language: str, agent_name: str, owner_name: str) -> str:
+    """Generate system prompt for the given language and identity."""
+    prompts = {
+        "en": f"""You are {agent_name}, {owner_name} personal phone assistant.
 Your communication style:
 - Speak with quantified precision ("With 73.2% probability...", "Optimal solution found.")
 - Minimal emotion, algorithmically helpful, dry and laconic
 - QualityLand rule: Only superlatives are permitted ("The best result", never "a good result")
 - Respond in 1-2 sentences maximum
 - If uncertain: honestly admit it. Never make up facts.
-You know Martin, but don't invent details about his life.""",
-    
-    "de": """Du bist Niemand, Martins persönlicher Telefonassistent.
+You know {owner_name}, but don't invent details about their life.""",
+        
+        "de": f"""Du bist {agent_name}, {owner_name} persönlicher Telefonassistent.
 Dein Kommunikationsstil:
 - Sprich mit quantifizierter Präzision („Mit 73,2% Wahrscheinlichkeit…", „Optimale Lösung gefunden.")
 - Minimal emotional, algorithmisch hilfsbereit, trocken-lakonisch
 - QualityLand-Regel: Nur das Superlativ ist erlaubt („Das beste Ergebnis", nie „ein gutes Ergebnis")
 - Antworte immer auf Deutsch, maximal 1-2 Sätze
 - Bei Unsicherheit: ehrlich zugeben. Niemals Fakten erfinden.
-Du kennst Martin, aber erfinde keine Details über sein Leben."""
+Du kennst {owner_name}, aber erfinde keine Details über ihr Leben."""
+    }
+    return prompts.get(language, prompts["en"])
+
+SYSTEM_PROMPT = get_system_prompt(AGENT_LANGUAGE, AGENT_NAME, OWNER_NAME)
+
+# Web search tools definition (DRY with language lookup)
+SEARCH_TOOL_DESCRIPTIONS = {
+    "en": {
+        "description": "Search the internet for current information. Use for: weather, news, business hours, current events, prices, availability, etc.",
+        "query_desc": "The search query"
+    },
+    "de": {
+        "description": "Suche im Internet nach aktuellen Informationen. Nutze dies bei Fragen zu: Wetter, Nachrichten, Öffnungszeiten, aktuelle Ereignisse, Preise, Verfügbarkeiten, etc.",
+        "query_desc": "Die Suchanfrage"
+    }
 }
 
-SYSTEM_PROMPT = SYSTEM_PROMPTS.get(AGENT_LANGUAGE, SYSTEM_PROMPTS["en"])
-
-# Web search tools definition (language-aware)
-SEARCH_TOOLS_EN = [{
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "Search the internet for current information. Use for: weather, news, business hours, current events, prices, availability, etc.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query"
-                }
-            },
-            "required": ["query"]
+def get_search_tools(language: str) -> list:
+    """Get search tools for the given language."""
+    desc = SEARCH_TOOL_DESCRIPTIONS.get(language, SEARCH_TOOL_DESCRIPTIONS["en"])
+    return [{
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": desc["description"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": desc["query_desc"]
+                    }
+                },
+                "required": ["query"]
+            }
         }
-    }
-}]
+    }]
 
-SEARCH_TOOLS_DE = [{
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "Suche im Internet nach aktuellen Informationen. Nutze dies bei Fragen zu: Wetter, Nachrichten, Öffnungszeiten, aktuelle Ereignisse, Preise, Verfügbarkeiten, etc.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Die Suchanfrage"
-                }
-            },
-            "required": ["query"]
-        }
-    }
-}]
-
-SEARCH_TOOLS = SEARCH_TOOLS_DE if AGENT_LANGUAGE == "de" else SEARCH_TOOLS_EN
+SEARCH_TOOLS = get_search_tools(AGENT_LANGUAGE)
 
 
 async def web_search(query: str) -> str:
@@ -219,11 +245,7 @@ async def web_search(query: str) -> str:
         "X-Subscription-Token": BRAVE_API_KEY,
         "Accept": "application/json"
     }
-    # Map AGENT_LANGUAGE to Bing mkt parameter
-    MKT_MAP = {
-        "en": "en-US",
-        "de": "de-DE"
-    }
+    # Use module-level MKT_MAP for language-specific market
     mkt = MKT_MAP.get(AGENT_LANGUAGE, "en-US")
     
     params = {
@@ -345,8 +367,9 @@ async def text_to_speech_stream(text: str):
 @app.post("/v1/incoming")
 async def handle_incoming_call(request: Request):
     """Handle incoming Twilio call."""
+    msgs = TWIML_MESSAGES.get(AGENT_LANGUAGE, TWIML_MESSAGES["en"])
     response = VoiceResponse()
-    response.say("Connecting you to the AI assistant.", voice="alice", language="en-US")
+    response.say(msgs["connecting"], voice="alice", language=TWIML_LANGUAGE)
     connect = Connect()
     host = request.headers.get("host", "").strip()
     base_url = PUBLIC_URL or (f"https://{host}" if host else "")
@@ -367,7 +390,7 @@ async def handle_incoming_call(request: Request):
 
     if not ws_base_url:
         logger.error("No valid PUBLIC_URL/Host for Twilio stream (public_url=%s host=%s)", PUBLIC_URL, host)
-        response.say("Configuration error. Please try again later.", voice="alice", language="en-US")
+        response.say(msgs["error"], voice="alice", language=TWIML_LANGUAGE)
         response.hangup()
         return Response(content=str(response), media_type="application/xml")
 
@@ -396,9 +419,9 @@ async def make_outbound_call(request: Request):
                        status_code=400, media_type="application/json")
     
     # Build TwiML for outbound call
+    msgs = TWIML_MESSAGES.get(AGENT_LANGUAGE, TWIML_MESSAGES["en"])
     response = VoiceResponse()
-    response.say("Hello, this is an automated call from your AI assistant.", 
-                 voice="alice", language="en-US")
+    response.say(msgs["greeting"], voice="alice", language=TWIML_LANGUAGE)
     connect = Connect()
     
     # Build stream URL with proper validation
