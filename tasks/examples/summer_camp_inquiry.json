@@ -2,7 +2,7 @@
   "to": "+15551234567",
   "task": "summer_camp_inquiry",
   "task_config": {
-    "assistant_name": "Assistant",
+    "assistant_name": "Alex",
     "parent_name": "Jane Smith",
     "child_name": "Emma",
     "child_birthday": "August 15, 2019",
