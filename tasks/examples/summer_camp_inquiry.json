@@ -1,0 +1,22 @@
+{
+  "to": "+15551234567",
+  "task": "summer_camp_inquiry",
+  "task_config": {
+    "assistant_name": "Alex",
+    "parent_name": "Jane Smith",
+    "child_name": "Emma",
+    "child_birthday": "August 15, 2019",
+    "child_current_age": "5 years old",
+    "child_grade": "Kindergarten",
+    "school_name": "Lincoln Elementary",
+    "resident_status": "City resident, child attends local school district",
+    "program_interest": "Explorer Camp (listed as Ages 6-8)",
+    "age_concern": "Emma will be 5 when camp starts in June but turns 6 in August — after the first session ends. The Explorer Camp lists 'Ages 6-8' so I wanted to clarify if that means age at camp start, or if rising 1st graders qualify regardless of birthday."
+  },
+  "_comments": {
+    "organization": "Example Recreation Department",
+    "program_url": "https://example.com/summer-camps",
+    "registration_opens": "March 2026",
+    "notes": "Replace this example with your actual details. Key questions: pricing, registration dates, daily hours, extended care, scholarships, what to bring."
+  }
+}
