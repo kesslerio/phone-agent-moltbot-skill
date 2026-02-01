@@ -41,6 +41,19 @@ Twilio (Phone) <--> WebSocket (Audio) <--> [Local Server] <--> Deepgram (STT)
     export PORT=8080
     ```
 
+    **Optional - System Prompt Customization** (priority: file > env var > built-in):
+    ```bash
+    # Option 1: Load from file
+    export SYSTEM_PROMPT_FILE="/path/to/custom-prompt.txt"
+    
+    # Option 2: Set directly via env var
+    export SYSTEM_PROMPT="You are a helpful phone assistant. Be concise and friendly."
+    
+    # Option 3: Use built-in defaults with name customization
+    export AGENT_NAME="Niemand"
+    export OWNER_NAME="Martin's"
+    ```
+
 3.  **Start the Server**:
     ```bash
     python3 scripts/server.py
@@ -63,6 +76,7 @@ Call your Twilio number. The agent should answer, transcribe your speech, think,
 
 ## Customization
 
-- **System Prompt**: Edit `SYSTEM_PROMPT` in `scripts/server.py` to change the persona.
+- **System Prompt**: Configure via `SYSTEM_PROMPT_FILE` (load from file), `SYSTEM_PROMPT` (env var), or modify the built-in defaults with `AGENT_NAME` and `OWNER_NAME`.
 - **Voice**: Change `ELEVENLABS_VOICE_ID` to use different voices.
 - **Model**: Switch `gpt-4o-mini` to `gpt-4` for smarter (but slower) responses.
+- **Language**: Set `AGENT_LANGUAGE` to `en` or `de` for English or German.

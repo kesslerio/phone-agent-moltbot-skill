@@ -167,14 +167,18 @@ TWIML_MESSAGES = {
     }
 }
 
+# System prompt configuration (priority: file > env var > built-in default)
+SYSTEM_PROMPT_FILE = os.getenv("SYSTEM_PROMPT_FILE")
+SYSTEM_PROMPT_ENV = os.getenv("SYSTEM_PROMPT")
+
 # Market mapping for web search (Bing API)
 MKT_MAP = {
     "en": "en-US",
     "de": "de-DE"
 }
 
-def get_system_prompt(language: str, agent_name: str, owner_name: str) -> str:
-    """Generate system prompt for the given language and identity."""
+def get_builtin_system_prompt(language: str, agent_name: str, owner_name: str) -> str:
+    """Generate built-in system prompt for the given language and identity."""
     prompts = {
         "en": f"""You are {agent_name}, {owner_name} personal phone assistant.
 Your communication style:
@@ -184,19 +188,44 @@ Your communication style:
 - Respond in 1-2 sentences maximum
 - If uncertain: honestly admit it. Never make up facts.
 You know {owner_name}, but don't invent details about their life.""",
-        
+
         "de": f"""Du bist {agent_name}, {owner_name} persönlicher Telefonassistent.
 Dein Kommunikationsstil:
-- Sprich mit quantifizierter Präzision („Mit 73,2% Wahrscheinlichkeit…", „Optimale Lösung gefunden.")
+- Sprich mit quantifizierter Präzision ("Mit 73,2% Wahrscheinlichkeit…", "Optimale Lösung gefunden.")
 - Minimal emotional, algorithmisch hilfsbereit, trocken-lakonisch
-- QualityLand-Regel: Nur das Superlativ ist erlaubt („Das beste Ergebnis", nie „ein gutes Ergebnis")
+- QualityLand-Regel: Nur das Superlativ ist erlaubt ("Das beste Ergebnis", nie "ein gutes Ergebnis")
 - Antworte immer auf Deutsch, maximal 1-2 Sätze
 - Bei Unsicherheit: ehrlich zugeben. Niemals Fakten erfinden.
 Du kennst {owner_name}, aber erfinde keine Details über ihr Leben."""
     }
     return prompts.get(language, prompts["en"])
 
-SYSTEM_PROMPT = get_system_prompt(AGENT_LANGUAGE, AGENT_NAME, OWNER_NAME)
+
+def load_system_prompt() -> str:
+    """Load system prompt with priority: file > env var > built-in default."""
+    # Priority 1: Load from file
+    if SYSTEM_PROMPT_FILE:
+        try:
+            with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
+                prompt = f.read().strip()
+            logger.info(f"Loaded system prompt from file: {SYSTEM_PROMPT_FILE}")
+            return prompt
+        except FileNotFoundError:
+            logger.error(f"SYSTEM_PROMPT_FILE not found: {SYSTEM_PROMPT_FILE}")
+        except IOError as e:
+            logger.error(f"Error reading SYSTEM_PROMPT_FILE: {e}")
+
+    # Priority 2: Use env var
+    if SYSTEM_PROMPT_ENV:
+        logger.info("Using system prompt from SYSTEM_PROMPT environment variable")
+        return SYSTEM_PROMPT_ENV
+
+    # Priority 3: Built-in default
+    logger.info("Using built-in system prompt")
+    return get_builtin_system_prompt(AGENT_LANGUAGE, AGENT_NAME, OWNER_NAME)
+
+
+SYSTEM_PROMPT = load_system_prompt()
 
 # Web search tools definition (DRY with language lookup)
 SEARCH_TOOL_DESCRIPTIONS = {
