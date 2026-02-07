@@ -29,6 +29,11 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "onwK4e9ZLuTAKqWW03F9")  # Daniel - Steady Broadcaster (male)
+
+# TTS Provider: "openai" (default, ~6x cheaper) or "elevenlabs" (higher quality)
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "openai").lower()
+OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "echo")  # warm, smooth, conversational
+OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "tts-1")  # tts-1 for low latency, tts-1-hd for quality
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")  # For web search
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -411,7 +416,87 @@ async def web_search(query: str) -> str:
 
 
 async def text_to_speech_stream(text: str):
-    """Stream TTS from ElevenLabs."""
+    """Stream TTS from the configured provider (openai or elevenlabs)."""
+    if TTS_PROVIDER == "elevenlabs":
+        async for chunk in _tts_elevenlabs_stream(text):
+            yield chunk
+    else:
+        async for chunk in _tts_openai_stream(text):
+            yield chunk
+
+
+async def _tts_openai_stream(text: str):
+    """Stream TTS from OpenAI API with ffmpeg transcode to µ-law 8kHz."""
+    url = "https://api.openai.com/v1/audio/speech"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    data = {
+        "model": OPENAI_TTS_MODEL,
+        "input": text,
+        "voice": OPENAI_TTS_VOICE,
+        "response_format": "mp3",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        async with client.stream("POST", url, json=data, headers=headers) as response:
+            if response.status_code != 200:
+                error_body = await response.aread()
+                logger.error(
+                    "OpenAI TTS failed (%s): %s",
+                    response.status_code,
+                    error_body.decode("utf-8", errors="replace").strip(),
+                )
+                return
+
+            # OpenAI streams MP3; transcode to µ-law for Twilio
+            ffmpeg = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-loglevel", "error", "-hide_banner",
+                "-i", "pipe:0",
+                "-f", "mulaw", "-ar", "8000", "-ac", "1",
+                "pipe:1",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            async def feed_ffmpeg():
+                try:
+                    async for chunk in response.aiter_bytes():
+                        if ffmpeg.stdin is None:
+                            break
+                        ffmpeg.stdin.write(chunk)
+                        await ffmpeg.stdin.drain()
+                finally:
+                    if ffmpeg.stdin:
+                        ffmpeg.stdin.close()
+
+            feed_task = asyncio.create_task(feed_ffmpeg())
+            try:
+                while True:
+                    if ffmpeg.stdout is None:
+                        break
+                    out = await ffmpeg.stdout.read(4096)
+                    if not out:
+                        break
+                    yield out
+            finally:
+                await feed_task
+                rc = await ffmpeg.wait()
+                if rc != 0:
+                    err = b""
+                    if ffmpeg.stderr:
+                        err = await ffmpeg.stderr.read()
+                    logger.error(
+                        "ffmpeg decode failed (%s): %s",
+                        rc,
+                        err.decode("utf-8", errors="replace").strip(),
+                    )
+
+
+async def _tts_elevenlabs_stream(text: str):
+    """Stream TTS from ElevenLabs API."""
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream?output_format=ulaw_8000"
     headers = {"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"}
     data = {"text": text, "model_id": "eleven_multilingual_v2"}
@@ -433,18 +518,9 @@ async def text_to_speech_stream(text: str):
             if "audio/mpeg" in content_type or "audio/mp3" in content_type:
                 # ElevenLabs streaming returns MP3 on this plan; decode to mu-law for Twilio.
                 ffmpeg = await asyncio.create_subprocess_exec(
-                    "ffmpeg",
-                    "-loglevel",
-                    "error",
-                    "-hide_banner",
-                    "-i",
-                    "pipe:0",
-                    "-f",
-                    "mulaw",
-                    "-ar",
-                    "8000",
-                    "-ac",
-                    "1",
+                    "ffmpeg", "-loglevel", "error", "-hide_banner",
+                    "-i", "pipe:0",
+                    "-f", "mulaw", "-ar", "8000", "-ac", "1",
                     "pipe:1",
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
@@ -931,4 +1007,10 @@ async def websocket_endpoint(twilio_ws: WebSocket):
 
 
 if __name__ == "__main__":
+    tts_info = (
+        f"OpenAI ({OPENAI_TTS_MODEL}, voice={OPENAI_TTS_VOICE})"
+        if TTS_PROVIDER != "elevenlabs"
+        else f"ElevenLabs (voice_id={ELEVENLABS_VOICE_ID})"
+    )
+    logger.info("TTS provider: %s", tts_info)
     uvicorn.run(app, host=HOST, port=PORT)
