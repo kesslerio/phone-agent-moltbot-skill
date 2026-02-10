@@ -429,6 +429,52 @@ async def text_to_speech_stream(text: str):
             yield chunk
 
 
+async def _transcode_mp3_to_mulaw(aiter_bytes):
+    """Transcode streamed MP3 bytes to µ-law 8kHz mono for Twilio."""
+    ffmpeg = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-loglevel", "error", "-hide_banner",
+        "-i", "pipe:0",
+        "-f", "mulaw", "-ar", "8000", "-ac", "1",
+        "pipe:1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    async def feed_ffmpeg():
+        try:
+            async for chunk in aiter_bytes:
+                if ffmpeg.stdin is None:
+                    break
+                ffmpeg.stdin.write(chunk)
+                await ffmpeg.stdin.drain()
+        finally:
+            if ffmpeg.stdin:
+                ffmpeg.stdin.close()
+
+    feed_task = asyncio.create_task(feed_ffmpeg())
+    try:
+        while True:
+            if ffmpeg.stdout is None:
+                break
+            out = await ffmpeg.stdout.read(4096)
+            if not out:
+                break
+            yield out
+    finally:
+        await feed_task
+        rc = await ffmpeg.wait()
+        if rc != 0:
+            err = b""
+            if ffmpeg.stderr:
+                err = await ffmpeg.stderr.read()
+            logger.error(
+                "ffmpeg decode failed (%s): %s",
+                rc,
+                err.decode("utf-8", errors="replace").strip(),
+            )
+
+
 async def _tts_openai_stream(text: str):
     """Stream TTS from OpenAI API with ffmpeg transcode to µ-law 8kHz."""
     url = "https://api.openai.com/v1/audio/speech"
@@ -454,49 +500,8 @@ async def _tts_openai_stream(text: str):
                 )
                 return
 
-            # OpenAI streams MP3; transcode to µ-law for Twilio
-            ffmpeg = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-loglevel", "error", "-hide_banner",
-                "-i", "pipe:0",
-                "-f", "mulaw", "-ar", "8000", "-ac", "1",
-                "pipe:1",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            async def feed_ffmpeg():
-                try:
-                    async for chunk in response.aiter_bytes():
-                        if ffmpeg.stdin is None:
-                            break
-                        ffmpeg.stdin.write(chunk)
-                        await ffmpeg.stdin.drain()
-                finally:
-                    if ffmpeg.stdin:
-                        ffmpeg.stdin.close()
-
-            feed_task = asyncio.create_task(feed_ffmpeg())
-            try:
-                while True:
-                    if ffmpeg.stdout is None:
-                        break
-                    out = await ffmpeg.stdout.read(4096)
-                    if not out:
-                        break
-                    yield out
-            finally:
-                await feed_task
-                rc = await ffmpeg.wait()
-                if rc != 0:
-                    err = b""
-                    if ffmpeg.stderr:
-                        err = await ffmpeg.stderr.read()
-                    logger.error(
-                        "ffmpeg decode failed (%s): %s",
-                        rc,
-                        err.decode("utf-8", errors="replace").strip(),
-                    )
+            async for chunk in _transcode_mp3_to_mulaw(response.aiter_bytes()):
+                yield chunk
 
 
 async def _tts_elevenlabs_stream(text: str):
@@ -521,48 +526,8 @@ async def _tts_elevenlabs_stream(text: str):
 
             if "audio/mpeg" in content_type or "audio/mp3" in content_type:
                 # ElevenLabs streaming returns MP3 on this plan; decode to mu-law for Twilio.
-                ffmpeg = await asyncio.create_subprocess_exec(
-                    "ffmpeg", "-loglevel", "error", "-hide_banner",
-                    "-i", "pipe:0",
-                    "-f", "mulaw", "-ar", "8000", "-ac", "1",
-                    "pipe:1",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-
-                async def feed_ffmpeg():
-                    try:
-                        async for chunk in response.aiter_bytes():
-                            if ffmpeg.stdin is None:
-                                break
-                            ffmpeg.stdin.write(chunk)
-                            await ffmpeg.stdin.drain()
-                    finally:
-                        if ffmpeg.stdin:
-                            ffmpeg.stdin.close()
-
-                feed_task = asyncio.create_task(feed_ffmpeg())
-                try:
-                    while True:
-                        if ffmpeg.stdout is None:
-                            break
-                        out = await ffmpeg.stdout.read(4096)
-                        if not out:
-                            break
-                        yield out
-                finally:
-                    await feed_task
-                    rc = await ffmpeg.wait()
-                    if rc != 0:
-                        err = b""
-                        if ffmpeg.stderr:
-                            err = await ffmpeg.stderr.read()
-                        logger.error(
-                            "ffmpeg decode failed (%s): %s",
-                            rc,
-                            err.decode("utf-8", errors="replace").strip(),
-                        )
+                async for chunk in _transcode_mp3_to_mulaw(response.aiter_bytes()):
+                    yield chunk
                 return
 
             async for chunk in response.aiter_bytes():
