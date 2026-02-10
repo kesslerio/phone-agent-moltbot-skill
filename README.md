@@ -5,6 +5,7 @@ A real-time AI voice agent that handles incoming phone calls using Twilio, trans
 ## Features
 
 - **Real-time Voice Processing**: Handles incoming Twilio calls with low-latency WebSocket audio
+- **Outbound Calling API**: Start AI-guided outbound calls with custom or templated system prompts
 - **Automatic Speech Recognition**: Deepgram for fast, accurate transcription
 - **AI-Powered Responses**: OpenAI GPT for intelligent conversation
 - **Natural Speech Output**: OpenAI TTS by default, with optional ElevenLabs streaming TTS
@@ -163,6 +164,42 @@ Call your Twilio number. The agent will:
 4. Generate a response via OpenAI
 5. Speak the response back to you
 
+### 5. Start an Outbound Call
+
+Call the outbound API from your local machine:
+
+```bash
+curl -X POST http://localhost:8080/outbound \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "+15551234567",
+    "system_prompt": "demo-confirmation",
+    "callback_url": "https://example.com/phone-agent-callback"
+  }'
+```
+
+Use a raw custom prompt:
+
+```bash
+curl -X POST http://localhost:8080/outbound \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "+15551234567",
+    "system_prompt": "You are calling to confirm tomorrow'\''s product demo at 2 PM ET. Confirm Zoom access and collect a new slot if needed."
+  }'
+```
+
+Then poll for results:
+
+```bash
+curl http://localhost:8080/outbound-result/<CALL_SID>
+```
+
+Available outbound templates:
+- `demo-confirmation`
+- `follow-up`
+- `custom` (falls back to default system prompt unless raw text is provided directly in `system_prompt`)
+
 ## Customization
 
 ### Change Agent Persona
@@ -300,9 +337,34 @@ Twilio sends call information to this endpoint. The server responds with TwiML t
 
 ### WebSocket Audio Stream
 
-**WS** `/ws`
+**WS** `/stream`
 
-Bidirectional audio stream for incoming call processing.
+Bidirectional audio stream for Twilio call processing.
+
+### Start Outbound Call
+
+**POST** `/outbound`
+
+JSON body:
+- `to` (required): phone number to call
+- `system_prompt` (optional): prompt template (`demo-confirmation`, `follow-up`) or raw prompt text
+- `callback_url` (optional): webhook URL that receives final call result
+
+### Outbound TwiML
+
+**POST** `/outbound-twiml`
+
+Twilio calls this endpoint during outbound setup. The response contains TwiML that opens the standard `/stream` websocket bridge and passes `outbound_sid`.
+
+### Get Outbound Result
+
+**GET** `/outbound-result/{call_sid}`
+
+Returns call result data including:
+- `transcript`
+- `status` (`confirmed`, `rescheduled`, `no-answer`, `voicemail`)
+- `action_items`
+- callback delivery status metadata when applicable
 
 ### Health Check
 
