@@ -50,6 +50,10 @@ if not OPENAI_API_KEY:
     logger.warning("OPENAI_API_KEY not set - AI responses will fail")
 if not DEEPGRAM_API_KEY:
     logger.warning("DEEPGRAM_API_KEY not set - transcription will fail")
+if TTS_PROVIDER == "openai" and not OPENAI_API_KEY:
+    logger.warning("TTS_PROVIDER is 'openai' but OPENAI_API_KEY is not set - OpenAI TTS will fail")
+if TTS_PROVIDER == "elevenlabs" and not ELEVENLABS_API_KEY:
+    logger.warning("TTS_PROVIDER is 'elevenlabs' but ELEVENLABS_API_KEY is not set - ElevenLabs TTS will fail")
 
 # Initialize Twilio client for outbound calls
 twilio_client = None
