@@ -488,7 +488,18 @@ async def finalize_outbound_result(call_sid: str, end_reason: str):
     if call_sid not in OUTBOUND_CONTEXTS and call_sid not in CALL_RESULTS:
         return
 
-    result = CALL_RESULTS.setdefault(call_sid, {})
+    result = CALL_RESULTS.setdefault(call_sid, {"call_sid": call_sid, "transcript": [], "stream_ended": False})
+    twilio_status = (result.get("twilio_status") or "").lower()
+    stream_ended = bool(result.get("stream_ended"))
+    if not stream_ended or twilio_status not in TERMINAL_TWILIO_STATUSES:
+        logger.info(
+            "Skipping outbound finalization for %s (stream_ended=%s, twilio_status=%s)",
+            call_sid,
+            stream_ended,
+            twilio_status,
+        )
+        return
+
     transcript_log = result.get("transcript", [])
     result["status"] = infer_outbound_status(transcript_log, result.get("twilio_status", ""))
     result["action_items"] = extract_action_items(transcript_log)
@@ -563,6 +574,7 @@ async def create_outbound_call_record(
         "to": to_number,
         "status": "in-progress",
         "twilio_status": call.status,
+        "stream_ended": False,
         "transcript": [],
         "action_items": [],
         "duration": None,
@@ -925,7 +937,8 @@ async def handle_call_status(request: Request):
         result["twilio_status"] = status
         result["duration"] = duration
         result["updated_at"] = _utc_now_iso()
-        if status in TERMINAL_TWILIO_STATUSES:
+        status_lower = (status or "").lower()
+        if status_lower in TERMINAL_TWILIO_STATUSES and result.get("stream_ended"):
             await finalize_outbound_result(call_sid, "status-webhook")
 
     if call_sid in active_calls:
@@ -994,7 +1007,10 @@ async def websocket_endpoint(twilio_ws: WebSocket):
         system_prompt = context.get("system_prompt") or SYSTEM_PROMPT
         logger.info("Loaded outbound prompt for call %s from %s", outbound_sid, context.get("prompt_source"))
 
-        result = CALL_RESULTS.setdefault(outbound_sid, {"call_sid": outbound_sid, "transcript": []})
+        result = CALL_RESULTS.setdefault(
+            outbound_sid,
+            {"call_sid": outbound_sid, "transcript": [], "stream_ended": False},
+        )
         result["to"] = context.get("to")
         result["callback_url"] = context.get("callback_url")
         result["prompt_source"] = context.get("prompt_source")
@@ -1145,7 +1161,10 @@ async def websocket_endpoint(twilio_ws: WebSocket):
                         context = OUTBOUND_CONTEXTS[call_sid]
                         system_prompt = context.get("system_prompt") or SYSTEM_PROMPT
                         conversation_history[0] = {"role": "system", "content": system_prompt}
-                        result = CALL_RESULTS.setdefault(call_sid, {"call_sid": call_sid, "transcript": []})
+                        result = CALL_RESULTS.setdefault(
+                            call_sid,
+                            {"call_sid": call_sid, "transcript": [], "stream_ended": False},
+                        )
                         result["to"] = context.get("to")
                         result["prompt_source"] = context.get("prompt_source")
                         result["callback_url"] = context.get("callback_url")
@@ -1271,7 +1290,11 @@ async def websocket_endpoint(twilio_ws: WebSocket):
         logger.error(f"Error: {e}", exc_info=True)
     finally:
         if call_sid and (call_sid in OUTBOUND_CONTEXTS or call_sid in CALL_RESULTS):
-            result = CALL_RESULTS.setdefault(call_sid, {"call_sid": call_sid, "transcript": []})
+            result = CALL_RESULTS.setdefault(
+                call_sid,
+                {"call_sid": call_sid, "transcript": [], "stream_ended": False},
+            )
+            result["stream_ended"] = True
             result["transcript"] = list(transcript_log)
             result["conversation"] = conversation_history[1:]  # Skip system prompt
             result["updated_at"] = _utc_now_iso()
