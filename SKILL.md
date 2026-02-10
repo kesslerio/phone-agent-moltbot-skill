@@ -1,6 +1,6 @@
 ---
 name: phone-agent
-description: "Run a real-time AI phone agent using Twilio, Deepgram, and ElevenLabs. Handles incoming calls, transcribes audio, generates responses via LLM, and speaks back via streaming TTS. Use when user wants to: (1) Test voice AI capabilities, (2) Handle phone calls programmatically, (3) Build a conversational voice bot."
+description: "Run a real-time AI phone agent using Twilio, Deepgram, and OpenAI/ElevenLabs TTS. Handles incoming calls, transcribes audio, generates responses via LLM, and speaks back via streaming TTS. Use when user wants to: (1) Test voice AI capabilities, (2) Handle phone calls programmatically, (3) Build a conversational voice bot."
 ---
 
 # Phone Agent Skill
@@ -13,15 +13,15 @@ Runs a local FastAPI server that acts as a real-time voice bridge.
 Twilio (Phone) <--> WebSocket (Audio) <--> [Local Server] <--> Deepgram (STT)
                                                   |
                                                   +--> OpenAI (LLM)
-                                                  +--> ElevenLabs (TTS)
+                                                  +--> OpenAI TTS or ElevenLabs (TTS)
 ```
 
 ## Prerequisites
 
 1.  **Twilio Account**: Phone number + TwiML App.
 2.  **Deepgram API Key**: For fast speech-to-text.
-3.  **OpenAI API Key**: For the conversation logic.
-4.  **ElevenLabs API Key**: For realistic text-to-speech.
+3.  **OpenAI API Key**: For conversation logic + TTS (default).
+4.  **ElevenLabs API Key** (optional): For higher-quality TTS (set `TTS_PROVIDER=elevenlabs`).
 5.  **Ngrok** (or similar): To expose your local port 8080 to Twilio.
 
 ## Setup
@@ -35,10 +35,18 @@ Twilio (Phone) <--> WebSocket (Audio) <--> [Local Server] <--> Deepgram (STT)
     ```bash
     export DEEPGRAM_API_KEY="your_key"
     export OPENAI_API_KEY="your_key"
-    export ELEVENLABS_API_KEY="your_key"
     export TWILIO_ACCOUNT_SID="your_sid"
     export TWILIO_AUTH_TOKEN="your_token"
     export PORT=8080
+
+    # TTS Provider (default: openai — ~6x cheaper than ElevenLabs)
+    export TTS_PROVIDER="openai"          # or "elevenlabs"
+    export OPENAI_TTS_VOICE="echo"        # alloy, echo, fable, onyx, nova, shimmer
+    export OPENAI_TTS_MODEL="tts-1"       # tts-1 (fast) or tts-1-hd (quality)
+
+    # Only needed if TTS_PROVIDER=elevenlabs
+    export ELEVENLABS_API_KEY="your_key"
+    export ELEVENLABS_VOICE_ID="onwK4e9ZLuTAKqWW03F9"
     ```
 
     **Optional - System Prompt Customization** (priority: file > env var > built-in):
@@ -77,6 +85,8 @@ Call your Twilio number. The agent should answer, transcribe your speech, think,
 ## Customization
 
 - **System Prompt**: Configure via `SYSTEM_PROMPT_FILE` (load from file), `SYSTEM_PROMPT` (env var), or modify the built-in defaults with `AGENT_NAME` and `OWNER_NAME`.
-- **Voice**: Change `ELEVENLABS_VOICE_ID` to use different voices.
+- **TTS Provider**: Set `TTS_PROVIDER=openai` (default, $0.03/min) or `TTS_PROVIDER=elevenlabs` ($0.17/min, higher quality).
+- **Voice (OpenAI)**: Set `OPENAI_TTS_VOICE` — options: alloy, echo, fable, onyx, nova, shimmer.
+- **Voice (ElevenLabs)**: Change `ELEVENLABS_VOICE_ID` to use different voices.
 - **Model**: Switch `gpt-4o-mini` to `gpt-4` for smarter (but slower) responses.
 - **Language**: Set `AGENT_LANGUAGE` to `en` or `de` for English or German.

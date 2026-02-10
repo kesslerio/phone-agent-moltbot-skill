@@ -1,13 +1,13 @@
 # Phone Agent Moltbot Skill
 
-A real-time AI voice agent that handles incoming phone calls using Twilio, transcribes speech with Deepgram, generates responses via OpenAI, and speaks back with ElevenLabs text-to-speech.
+A real-time AI voice agent that handles incoming phone calls using Twilio, transcribes speech with Deepgram, generates responses via OpenAI, and speaks back with OpenAI text-to-speech by default (with optional ElevenLabs TTS).
 
 ## Features
 
 - **Real-time Voice Processing**: Handles incoming Twilio calls with low-latency WebSocket audio
 - **Automatic Speech Recognition**: Deepgram for fast, accurate transcription
 - **AI-Powered Responses**: OpenAI GPT for intelligent conversation
-- **Natural Speech Output**: ElevenLabs for realistic, streaming TTS
+- **Natural Speech Output**: OpenAI TTS by default, with optional ElevenLabs streaming TTS
 - **Task-Based Automation**: Configurable task definitions for specific agent behaviors
 - **Recording & Logging**: Automatic call recording and conversation logs
 
@@ -25,7 +25,7 @@ Incoming Call (Twilio Phone)
          |           |
          |           +---> OpenAI (LLM/Intelligence)
          |           |
-         |           +---> ElevenLabs (Text-to-Speech)
+         |           +---> OpenAI TTS (default) / ElevenLabs TTS (optional)
          |           |
          +---------- (Audio Response)
          |
@@ -44,7 +44,7 @@ Before you begin, ensure you have:
 2. **API Keys** (free tier available for all)
    - Deepgram API Key (https://console.deepgram.com/)
    - OpenAI API Key (https://platform.openai.com/api-keys)
-   - ElevenLabs API Key (https://elevenlabs.io/)
+   - ElevenLabs API Key (optional; only needed when `TTS_PROVIDER=elevenlabs`) (https://elevenlabs.io/)
 
 3. **Local Network Access**
    - Ngrok or similar tool to expose localhost to the internet
@@ -73,6 +73,13 @@ Create a `.env` file or set environment variables:
 # API Keys (required)
 export DEEPGRAM_API_KEY="your-deepgram-key"
 export OPENAI_API_KEY="your-openai-key"
+
+# TTS Provider (optional; default is OpenAI)
+export TTS_PROVIDER="openai"  # "openai" (default) or "elevenlabs"
+export OPENAI_TTS_VOICE="echo"
+export OPENAI_TTS_MODEL="tts-1"
+
+# ElevenLabs (optional; only when TTS_PROVIDER=elevenlabs)
 export ELEVENLABS_API_KEY="your-elevenlabs-key"
 
 # Twilio (required)
@@ -85,7 +92,7 @@ export PORT=8080
 export PUBLIC_URL="https://your-ngrok-url.ngrok.io"  # For webhooks
 
 # Voice Customization (optional)
-export ELEVENLABS_VOICE_ID="onwK4e9ZLuTAKqWW03F9"  # Daniel voice
+export ELEVENLABS_VOICE_ID="onwK4e9ZLuTAKqWW03F9"  # only for ElevenLabs provider
 
 # System Prompt Configuration (optional)
 export SYSTEM_PROMPT_FILE="/path/to/custom-prompt.txt"  # Load prompt from file
@@ -109,6 +116,7 @@ Or add to `~/.moltbot/.env` or `~/.clawdbot/.env`:
 ```
 DEEPGRAM_API_KEY=your-key
 OPENAI_API_KEY=your-key
+TTS_PROVIDER=openai
 ELEVENLABS_API_KEY=your-key
 TWILIO_ACCOUNT_SID=your-sid
 TWILIO_AUTH_TOKEN=your-token
@@ -167,9 +175,17 @@ SYSTEM_PROMPT = """You are a helpful customer service agent. Be friendly, concis
 
 ### Change Voice
 
-Set a different ElevenLabs voice ID:
+OpenAI is the default TTS provider:
 
 ```bash
+export TTS_PROVIDER="openai"
+export OPENAI_TTS_VOICE="echo"
+```
+
+To use ElevenLabs instead:
+
+```bash
+export TTS_PROVIDER="elevenlabs"
 export ELEVENLABS_VOICE_ID="g1r0eKKcGkk7Ep0RVcVn"  # Callum voice
 ```
 
@@ -269,8 +285,9 @@ phone-agent-moltbot-skill/
 
 ### Voice Not Speaking
 
-- Verify ELEVENLABS_API_KEY is valid
-- Check voice ID is correct: https://elevenlabs.io/docs/api-reference/voices
+- Verify `TTS_PROVIDER` is set correctly (`openai` by default, `elevenlabs` for ElevenLabs)
+- If using OpenAI TTS, verify `OPENAI_API_KEY` is valid
+- If using ElevenLabs TTS, verify `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` are valid
 - Confirm audio is not muted on the receiving phone
 
 ## API Reference
@@ -304,7 +321,7 @@ For production:
 - Run multiple server instances behind a load balancer
 - Use Twilio's call queuing
 - Implement connection pooling for API clients
-- Consider dedicated hardware for Deepgram/ElevenLabs processing
+- Consider dedicated hardware for Deepgram and your selected TTS provider (OpenAI by default, or ElevenLabs)
 
 ## Deployment Options
 
@@ -331,11 +348,14 @@ docker build -t phone-agent .
 docker run -p 8080:8080 \
   -e DEEPGRAM_API_KEY="..." \
   -e OPENAI_API_KEY="..." \
+  -e TTS_PROVIDER="openai" \
   -e ELEVENLABS_API_KEY="..." \
   -e TWILIO_ACCOUNT_SID="..." \
   -e TWILIO_AUTH_TOKEN="..." \
   phone-agent
 ```
+
+`ELEVENLABS_API_KEY` is optional unless `TTS_PROVIDER=elevenlabs`.
 
 ### Cloud Deployment
 
@@ -359,13 +379,13 @@ Contributions welcome! Please:
 
 ## Support
 
-- MCP Server: [Deepgram](https://deepgram.com/) | [OpenAI](https://openai.com/) | [ElevenLabs](https://elevenlabs.io/)
+- MCP Server / APIs: [Deepgram](https://deepgram.com/) | [OpenAI](https://openai.com/) (LLM + default TTS) | [ElevenLabs](https://elevenlabs.io/) (optional TTS)
 - Twilio Docs: [Voice API](https://www.twilio.com/docs/voice)
 - Moltbot: [Documentation](https://moltbot.io/)
 
 ## Requirements
 
-- `ffmpeg` must be in PATH (for converting ElevenLabs MP3 to Twilio mu-law audio)
+- `ffmpeg` must be in PATH (for converting OpenAI/ElevenLabs MP3 audio to Twilio mu-law audio)
 - If running as a systemd service, ensure PATH includes ffmpeg location:
   ```ini
   Environment=PATH=/home/art/.nix-profile/bin:/usr/bin:/bin
