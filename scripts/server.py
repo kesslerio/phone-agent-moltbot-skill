@@ -885,12 +885,18 @@ async def make_outbound_call_legacy(request: Request):
     # Keep legacy map for compatibility with existing /calls payload.
     if response.status_code < 400:
         payload = json.loads(response.body.decode("utf-8"))
+        payload["task"] = task_name
         active_calls[payload["call_sid"]] = {
             "to": to_number,
             "task": task_name,
             "task_config": task_config,
             "started": _utc_now_iso(),
         }
+        return Response(
+            content=json.dumps(payload),
+            status_code=response.status_code,
+            media_type="application/json",
+        )
     return response
 
 
