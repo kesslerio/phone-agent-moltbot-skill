@@ -491,12 +491,15 @@ async def finalize_outbound_result(call_sid: str, end_reason: str):
     result = CALL_RESULTS.setdefault(call_sid, {"call_sid": call_sid, "transcript": [], "stream_ended": False})
     twilio_status = (result.get("twilio_status") or "").lower()
     stream_ended = bool(result.get("stream_ended"))
-    if not stream_ended or twilio_status not in TERMINAL_TWILIO_STATUSES:
+    no_media_terminal = twilio_status in NO_ANSWER_TWILIO_STATUSES
+    requires_stream_end = not no_media_terminal
+    if (requires_stream_end and not stream_ended) or twilio_status not in TERMINAL_TWILIO_STATUSES:
         logger.info(
-            "Skipping outbound finalization for %s (stream_ended=%s, twilio_status=%s)",
+            "Skipping outbound finalization for %s (stream_ended=%s, twilio_status=%s, no_media_terminal=%s)",
             call_sid,
             stream_ended,
             twilio_status,
+            no_media_terminal,
         )
         return
 
@@ -944,7 +947,10 @@ async def handle_call_status(request: Request):
         result["duration"] = duration
         result["updated_at"] = _utc_now_iso()
         status_lower = (status or "").lower()
-        if status_lower in TERMINAL_TWILIO_STATUSES and result.get("stream_ended"):
+        should_finalize = status_lower in TERMINAL_TWILIO_STATUSES and (
+            result.get("stream_ended") or status_lower in NO_ANSWER_TWILIO_STATUSES
+        )
+        if should_finalize:
             await finalize_outbound_result(call_sid, "status-webhook")
 
     if call_sid in active_calls:
