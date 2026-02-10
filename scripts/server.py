@@ -5,6 +5,7 @@ import json
 import asyncio
 import base64
 import logging
+import datetime
 import websockets
 import websockets.exceptions
 from urllib.parse import urlsplit
@@ -64,6 +65,10 @@ if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
 # In-memory call tracking (call_sid -> task_info)
 active_calls = {}
 call_results = {}
+
+# Outbound call context/result storage
+OUTBOUND_CONTEXTS = {}
+CALL_RESULTS = {}
 
 # Task storage directory
 TASKS_DIR = os.path.join(os.path.dirname(__file__), "..", "tasks")
@@ -178,6 +183,32 @@ TWIML_MESSAGES = {
         "error": "Konfigurationsfehler. Bitte versuchen Sie es später erneut."
     }
 }
+
+# Outbound system prompt templates
+TEMPLATES = {
+    "demo-confirmation": """You are an outbound demo-confirmation assistant.
+Goal: Confirm the scheduled demo time, verify the contact can access Zoom, and handle rescheduling if needed.
+Flow:
+1. Confirm you reached the right person and mention this is a demo confirmation call.
+2. Confirm the current scheduled date/time.
+3. Verify Zoom access and meeting readiness.
+4. If they need changes, collect a preferred alternative time and summarize next steps.
+5. End with a clear confirmation or rescheduling summary.
+Keep responses concise, professional, and action-oriented.""",
+    "follow-up": """You are a post-demo follow-up assistant.
+Goal: Check how the demo went, capture key feedback, and identify clear next steps.
+Flow:
+1. Confirm this is a quick follow-up regarding the recent demo.
+2. Ask if they have open questions or blockers.
+3. Confirm interest level and expected timeline.
+4. Capture any requested follow-up actions and owners.
+5. Close with a concise summary of next steps.
+Keep responses concise and focused on outcomes.""",
+    "custom": "CUSTOM_PROMPT",
+}
+
+TERMINAL_TWILIO_STATUSES = {"completed", "failed", "busy", "no-answer", "canceled"}
+NO_ANSWER_TWILIO_STATUSES = {"failed", "busy", "no-answer", "canceled"}
 
 # System prompt configuration (priority: file > env var > built-in default)
 SYSTEM_PROMPT_FILE = os.getenv("SYSTEM_PROMPT_FILE")
@@ -332,6 +363,243 @@ try:
 except SystemPromptError as e:
     logger.critical(f"Failed to load system prompt: {e}")
     sys.exit(1)
+
+
+def _utc_now_iso() -> str:
+    """Return UTC timestamp in ISO-8601 format."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _build_public_and_ws_urls(request: Request) -> tuple[str, str]:
+    """Build normalized public HTTP and WS base URLs."""
+    host = request.headers.get("host", "").strip()
+    base_url = PUBLIC_URL or (f"https://{host}" if host else "")
+    if base_url and not base_url.startswith(("http://", "https://", "ws://", "wss://")):
+        base_url = f"https://{base_url}"
+
+    ws_base_url = ""
+    if base_url:
+        parts = urlsplit(base_url)
+        scheme = parts.scheme or "https"
+        if scheme in ("http", "https", "ws", "wss") and parts.netloc:
+            ws_scheme = "wss" if scheme in ("https", "wss") else "ws"
+            base_path = (parts.path or "").rstrip("/")
+            ws_base_url = f"{ws_scheme}://{parts.netloc}{base_path}" if base_path else f"{ws_scheme}://{parts.netloc}"
+    return base_url, ws_base_url
+
+
+def resolve_outbound_prompt(prompt_value):
+    """Resolve outbound prompt from template name or raw prompt text."""
+    if isinstance(prompt_value, dict):
+        template_name = str(prompt_value.get("template", "")).strip()
+        custom_text = str(prompt_value.get("text", "") or prompt_value.get("prompt", "")).strip()
+        if template_name in TEMPLATES and template_name != "custom":
+            return TEMPLATES[template_name], template_name
+        if custom_text:
+            return custom_text, "custom"
+        return SYSTEM_PROMPT, "default"
+
+    if not isinstance(prompt_value, str):
+        return SYSTEM_PROMPT, "default"
+
+    prompt_value = prompt_value.strip()
+    if not prompt_value:
+        return SYSTEM_PROMPT, "default"
+
+    if prompt_value in TEMPLATES and prompt_value != "custom":
+        return TEMPLATES[prompt_value], prompt_value
+
+    if prompt_value == "custom":
+        logger.warning("Received system_prompt='custom' without custom text, falling back to default prompt")
+        return SYSTEM_PROMPT, "default"
+
+    return prompt_value, "custom"
+
+
+def infer_outbound_status(transcript_log: list, twilio_status: str = "") -> str:
+    """Infer outcome status for outbound calls."""
+    status = (twilio_status or "").lower()
+    if status in NO_ANSWER_TWILIO_STATUSES:
+        return "no-answer"
+
+    combined = " ".join(entry.get("content", "").lower() for entry in transcript_log)
+    if any(keyword in combined for keyword in ("voicemail", "voice mail", "mailbox", "leave a message", "at the tone")):
+        return "voicemail"
+    if any(keyword in combined for keyword in ("reschedule", "another time", "different time", "move the demo", "can't make")):
+        return "rescheduled"
+    if any(keyword in combined for keyword in ("confirm", "confirmed", "sounds good", "works for me", "see you then")):
+        return "confirmed"
+    if status == "completed" and transcript_log:
+        return "confirmed"
+    return "confirmed" if transcript_log else "no-answer"
+
+
+def extract_action_items(transcript_log: list) -> list:
+    """Extract simple action items from assistant responses."""
+    action_items = []
+    for entry in transcript_log:
+        if entry.get("role") != "assistant":
+            continue
+        text = entry.get("content", "").strip()
+        lowered = text.lower()
+        if any(token in lowered for token in ("i will", "i'll", "please", "next step", "follow up", "reschedule", "send")):
+            action_items.append(text)
+    # Deduplicate while preserving order
+    return list(dict.fromkeys(action_items))
+
+
+async def post_outbound_callback(call_sid: str):
+    """POST outbound call result to callback URL if configured."""
+    context = OUTBOUND_CONTEXTS.get(call_sid, {})
+    callback_url = context.get("callback_url")
+    result = CALL_RESULTS.get(call_sid)
+
+    if not callback_url or not result or result.get("callback_sent"):
+        return
+
+    payload = {
+        "call_sid": call_sid,
+        "to": result.get("to"),
+        "status": result.get("status"),
+        "twilio_status": result.get("twilio_status"),
+        "transcript": result.get("transcript", []),
+        "action_items": result.get("action_items", []),
+        "duration": result.get("duration"),
+        "completed": result.get("completed", False),
+        "updated_at": result.get("updated_at"),
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            callback_response = await client.post(callback_url, json=payload)
+            callback_response.raise_for_status()
+        result["callback_sent"] = True
+        result["callback_status_code"] = callback_response.status_code
+        logger.info("Posted outbound callback for %s to %s", call_sid, callback_url)
+    except Exception as e:
+        logger.error("Failed outbound callback for %s: %s", call_sid, e)
+        result["callback_error"] = str(e)
+
+
+async def finalize_outbound_result(call_sid: str, end_reason: str):
+    """Finalize outbound result state and trigger callback if needed."""
+    if not call_sid:
+        return
+    if call_sid not in OUTBOUND_CONTEXTS and call_sid not in CALL_RESULTS:
+        return
+
+    result = CALL_RESULTS.setdefault(call_sid, {"call_sid": call_sid, "transcript": [], "stream_ended": False})
+    twilio_status = (result.get("twilio_status") or "").lower()
+    stream_ended = bool(result.get("stream_ended"))
+    no_media_terminal = twilio_status in NO_ANSWER_TWILIO_STATUSES
+    requires_stream_end = not no_media_terminal
+    if (requires_stream_end and not stream_ended) or twilio_status not in TERMINAL_TWILIO_STATUSES:
+        logger.info(
+            "Skipping outbound finalization for %s (stream_ended=%s, twilio_status=%s, no_media_terminal=%s)",
+            call_sid,
+            stream_ended,
+            twilio_status,
+            no_media_terminal,
+        )
+        return
+
+    transcript_log = result.get("transcript", [])
+    result["status"] = infer_outbound_status(transcript_log, result.get("twilio_status", ""))
+    result["action_items"] = extract_action_items(transcript_log)
+    result["completed"] = True
+    result["ended_by"] = end_reason
+    result["updated_at"] = _utc_now_iso()
+
+    file_path = save_call_result(call_sid, result)
+    result["result_file"] = file_path
+    await post_outbound_callback(call_sid)
+
+
+async def create_outbound_call_record(
+    request: Request,
+    to_number: str,
+    resolved_prompt: str,
+    prompt_source: str,
+    callback_url: str | None = None,
+    metadata: dict | None = None,
+):
+    """Create outbound Twilio call and initialize context/result records."""
+    if not twilio_client:
+        return Response(
+            content=json.dumps({"error": "Twilio not configured"}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+    base_url, ws_base_url = _build_public_and_ws_urls(request)
+    if not base_url or not ws_base_url:
+        host = request.headers.get("host", "").strip()
+        logger.error("No valid PUBLIC_URL/Host for outbound call (public_url=%s host=%s)", PUBLIC_URL, host)
+        return Response(
+            content=json.dumps({"error": "Server configuration error: no public URL"}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+    path_prefix = os.getenv("PATH_PREFIX", "")
+    twiml_url = f"{base_url}{path_prefix}/outbound-twiml"
+    status_callback_url = f"{base_url}{path_prefix}/call-status"
+
+    try:
+        call = twilio_client.calls.create(
+            to=to_number,
+            from_=TWILIO_PHONE_NUMBER,
+            url=twiml_url,
+            method="POST",
+            status_callback=status_callback_url,
+            status_callback_method="POST",
+            status_callback_event=["initiated", "ringing", "answered", "completed", "failed", "no-answer", "busy", "canceled"],
+        )
+    except Exception as e:
+        logger.error("Failed to create outbound call: %s", e)
+        return Response(
+            content=json.dumps({"error": str(e)}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+    OUTBOUND_CONTEXTS[call.sid] = {
+        "to": to_number,
+        "system_prompt": resolved_prompt,
+        "prompt_source": prompt_source,
+        "callback_url": callback_url,
+        "created_at": _utc_now_iso(),
+        "metadata": metadata or {},
+    }
+
+    CALL_RESULTS[call.sid] = {
+        "call_sid": call.sid,
+        "to": to_number,
+        "status": "in-progress",
+        "twilio_status": call.status,
+        "stream_ended": False,
+        "transcript": [],
+        "action_items": [],
+        "duration": None,
+        "completed": False,
+        "updated_at": _utc_now_iso(),
+        "prompt_source": prompt_source,
+        "callback_url": callback_url,
+        "metadata": metadata or {},
+    }
+
+    return Response(
+        content=json.dumps(
+            {
+                "call_sid": call.sid,
+                "status": call.status,
+                "to": to_number,
+                "prompt_source": prompt_source,
+                "callback_url": callback_url,
+            }
+        ),
+        media_type="application/json",
+    )
 
 # Web search tools definition (DRY with language lookup)
 SEARCH_TOOL_DESCRIPTIONS = {
@@ -542,24 +810,10 @@ async def handle_incoming_call(request: Request):
     response = VoiceResponse()
     response.say(msgs["connecting"], voice="alice", language=TWIML_LANGUAGE)
     connect = Connect()
-    host = request.headers.get("host", "").strip()
-    base_url = PUBLIC_URL or (f"https://{host}" if host else "")
-    if base_url and not base_url.startswith(("http://", "https://", "ws://", "wss://")):
-        base_url = f"https://{base_url}"
-
-    ws_base_url = ""
-    if base_url:
-        parts = urlsplit(base_url)
-        scheme = parts.scheme or "https"
-        if scheme in ("http", "https", "ws", "wss") and parts.netloc:
-            ws_scheme = "wss" if scheme in ("https", "wss") else "ws"
-            base_path = (parts.path or "").rstrip("/")
-            if base_path and base_path != "/":
-                ws_base_url = f"{ws_scheme}://{parts.netloc}{base_path}"
-            else:
-                ws_base_url = f"{ws_scheme}://{parts.netloc}"
+    _, ws_base_url = _build_public_and_ws_urls(request)
 
     if not ws_base_url:
+        host = request.headers.get("host", "").strip()
         logger.error("No valid PUBLIC_URL/Host for Twilio stream (public_url=%s host=%s)", PUBLIC_URL, host)
         response.say(msgs["error"], voice="alice", language=TWIML_LANGUAGE)
         response.hangup()
@@ -573,91 +827,108 @@ async def handle_incoming_call(request: Request):
     return Response(content=str(response), media_type="application/xml")
 
 
-@app.post("/call")
+@app.post("/outbound")
 async def make_outbound_call(request: Request):
-    """Initiate outbound call with task objective."""
-    if not twilio_client:
-        return Response(content=json.dumps({"error": "Twilio not configured"}), 
-                       status_code=500, media_type="application/json")
-    
+    """Initiate outbound call with optional prompt template/callback URL."""
     data = await request.json()
-    to_number = data.get("to")
+    to_number = str(data.get("to", "")).strip()
+    prompt_input = data.get("system_prompt")
+    callback_url = data.get("callback_url")
+
+    if not to_number:
+        return Response(
+            content=json.dumps({"error": "Missing required field: to"}),
+            status_code=400,
+            media_type="application/json",
+        )
+
+    if callback_url and (not isinstance(callback_url, str) or not callback_url.startswith(("http://", "https://"))):
+        return Response(
+            content=json.dumps({"error": "callback_url must be an http(s) URL"}),
+            status_code=400,
+            media_type="application/json",
+        )
+
+    resolved_prompt, prompt_source = resolve_outbound_prompt(prompt_input)
+    return await create_outbound_call_record(
+        request=request,
+        to_number=to_number,
+        resolved_prompt=resolved_prompt,
+        prompt_source=prompt_source,
+        callback_url=callback_url,
+    )
+
+
+@app.post("/call")
+async def make_outbound_call_legacy(request: Request):
+    """Backward-compatible outbound endpoint using task prompts."""
+    data = await request.json()
+    to_number = str(data.get("to", "")).strip()
     task_name = data.get("task", "general")
     task_config = data.get("task_config", {})
-    
+    callback_url = data.get("callback_url")
+
     if not to_number:
-        return Response(content=json.dumps({"error": "Missing 'to' number"}),
-                       status_code=400, media_type="application/json")
-    
-    # Build TwiML for outbound call
+        return Response(
+            content=json.dumps({"error": "Missing required field: to"}),
+            status_code=400,
+            media_type="application/json",
+        )
+
+    resolved_prompt = get_task_prompt(task_name, task_config) if task_name else SYSTEM_PROMPT
+    response = await create_outbound_call_record(
+        request=request,
+        to_number=to_number,
+        resolved_prompt=resolved_prompt,
+        prompt_source=f"legacy-task:{task_name}",
+        callback_url=callback_url,
+        metadata={"task": task_name, "task_config": task_config},
+    )
+
+    # Keep legacy map for compatibility with existing /calls payload.
+    if response.status_code < 400:
+        payload = json.loads(response.body.decode("utf-8"))
+        payload["task"] = task_name
+        active_calls[payload["call_sid"]] = {
+            "to": to_number,
+            "task": task_name,
+            "task_config": task_config,
+            "started": _utc_now_iso(),
+        }
+        return Response(
+            content=json.dumps(payload),
+            status_code=response.status_code,
+            media_type="application/json",
+        )
+    return response
+
+
+@app.post("/outbound-twiml")
+async def outbound_twiml(request: Request):
+    """Return TwiML for outbound calls and connect to websocket audio bridge."""
+    data = await request.form()
+    call_sid = data.get("CallSid")
     msgs = TWIML_MESSAGES.get(AGENT_LANGUAGE, TWIML_MESSAGES["en"])
     response = VoiceResponse()
     response.say(msgs["greeting"], voice="alice", language=TWIML_LANGUAGE)
     connect = Connect()
-    
-    # Build stream URL with proper validation
-    host = request.headers.get("host", "").strip()
-    base_url = PUBLIC_URL or (f"https://{host}" if host else "")
-    if base_url and not base_url.startswith(("http://", "https://", "ws://", "wss://")):
-        base_url = f"https://{base_url}"
 
-    ws_base_url = ""
-    if base_url:
-        parts = urlsplit(base_url)
-        scheme = parts.scheme or "https"
-        if scheme in ("http", "https", "ws", "wss") and parts.netloc:
-            ws_scheme = "wss" if scheme in ("https", "wss") else "ws"
-            base_path = (parts.path or "").rstrip("/")
-            if base_path and base_path != "/":
-                ws_base_url = f"{ws_scheme}://{parts.netloc}{base_path}"
-            else:
-                ws_base_url = f"{ws_scheme}://{parts.netloc}"
-
+    _, ws_base_url = _build_public_and_ws_urls(request)
     if not ws_base_url:
-        logger.error("No valid PUBLIC_URL/Host for Twilio stream (public_url=%s host=%s)", PUBLIC_URL, host)
-        return Response(content=json.dumps({"error": "Server configuration error: no public URL"}),
-                       status_code=500, media_type="application/json")
+        host = request.headers.get("host", "").strip()
+        logger.error("No valid PUBLIC_URL/Host for outbound stream (public_url=%s host=%s)", PUBLIC_URL, host)
+        response.say(msgs["error"], voice="alice", language=TWIML_LANGUAGE)
+        response.hangup()
+        return Response(content=str(response), media_type="application/xml")
 
     path_prefix = os.getenv("PATH_PREFIX", "")
     stream_url = f"{ws_base_url}{path_prefix}/stream"
-    
+    if call_sid:
+        stream_url = f"{stream_url}?outbound_sid={call_sid}"
+    logger.info("Outbound stream url: %s", stream_url)
     connect.stream(url=stream_url, track="inbound_track")
     response.append(connect)
-    
-    logger.info(f"TwiML being sent: {str(response)}")
-    logger.info(f"Stream URL: {stream_url}")
-    
-    # Make the call
-    try:
-        call = twilio_client.calls.create(
-            to=to_number,
-            from_=TWILIO_PHONE_NUMBER,
-            twiml=str(response),
-            status_callback=f"{base_url}{path_prefix}/call-status",
-            status_callback_event=["completed", "failed", "no-answer", "busy"]
-        )
-        
-        # Store call info
-        active_calls[call.sid] = {
-            "to": to_number,
-            "task": task_name,
-            "task_config": task_config,
-            "started": asyncio.get_event_loop().time()
-        }
-        
-        logger.info(f"Outbound call initiated: {call.sid} to {to_number} (task: {task_name})")
-        
-        return Response(content=json.dumps({
-            "call_sid": call.sid,
-            "status": call.status,
-            "to": to_number,
-            "task": task_name
-        }), media_type="application/json")
-        
-    except Exception as e:
-        logger.error(f"Failed to create outbound call: {e}")
-        return Response(content=json.dumps({"error": str(e)}),
-                       status_code=500, media_type="application/json")
+    return Response(content=str(response), media_type="application/xml")
 
 
 @app.post("/call-status")
@@ -669,20 +940,45 @@ async def handle_call_status(request: Request):
     duration = data.get("CallDuration", 0)
     
     logger.info(f"Call {call_sid} status: {status}, duration: {duration}s")
-    
+
+    if call_sid and call_sid in CALL_RESULTS:
+        result = CALL_RESULTS[call_sid]
+        result["twilio_status"] = status
+        result["duration"] = duration
+        result["updated_at"] = _utc_now_iso()
+        status_lower = (status or "").lower()
+        should_finalize = status_lower in TERMINAL_TWILIO_STATUSES and (
+            result.get("stream_ended") or status_lower in NO_ANSWER_TWILIO_STATUSES
+        )
+        if should_finalize:
+            await finalize_outbound_result(call_sid, "status-webhook")
+
     if call_sid in active_calls:
         call_info = active_calls[call_sid]
         call_info["status"] = status
         call_info["duration"] = duration
-        
+
         # Save to results
         call_results[call_sid] = call_info
-        
+
         # Clean up active
-        if status in ["completed", "failed", "busy", "no-answer", "canceled"]:
+        if status in TERMINAL_TWILIO_STATUSES:
             del active_calls[call_sid]
     
     return Response(content="OK", media_type="text/plain")
+
+
+@app.get("/outbound-result/{call_sid}")
+async def get_outbound_result(call_sid: str):
+    """Get outbound call result by call SID."""
+    result = CALL_RESULTS.get(call_sid)
+    if not result:
+        return Response(
+            content=json.dumps({"error": f"No outbound result found for {call_sid}"}),
+            status_code=404,
+            media_type="application/json",
+        )
+    return result
 
 
 @app.get("/calls")
@@ -690,7 +986,9 @@ async def list_calls():
     """List all call results."""
     return {
         "active": active_calls,
-        "completed": call_results
+        "completed": call_results,
+        "outbound_contexts": OUTBOUND_CONTEXTS,
+        "outbound_results": CALL_RESULTS,
     }
 
 
@@ -700,19 +998,36 @@ async def websocket_endpoint(twilio_ws: WebSocket):
     """Handle Twilio WebSocket and bridge to Deepgram."""
     await twilio_ws.accept()
     
-    # Check for task parameter (outbound calls)
+    # Query params can include legacy task and outbound call SID context.
     task_name = twilio_ws.query_params.get("task", "")
-    call_sid = None
+    outbound_sid = twilio_ws.query_params.get("outbound_sid", "").strip()
+    call_sid = outbound_sid or None
     task_config = None
     transcript_log = []
     
-    if task_name:
+    if outbound_sid:
+        logger.info("WebSocket accepted for outbound call: %s", outbound_sid)
+    elif task_name:
         logger.info(f"WebSocket accepted for task: {task_name}")
     else:
         logger.info("WebSocket accepted for inbound call")
     
-    # Initialize with default prompt - will update once we get call_sid
+    # Initialize prompt. Outbound calls can override this with stored context.
     system_prompt = SYSTEM_PROMPT
+    if outbound_sid and outbound_sid in OUTBOUND_CONTEXTS:
+        context = OUTBOUND_CONTEXTS[outbound_sid]
+        system_prompt = context.get("system_prompt") or SYSTEM_PROMPT
+        logger.info("Loaded outbound prompt for call %s from %s", outbound_sid, context.get("prompt_source"))
+
+        result = CALL_RESULTS.setdefault(
+            outbound_sid,
+            {"call_sid": outbound_sid, "transcript": [], "stream_ended": False},
+        )
+        result["to"] = context.get("to")
+        result["callback_url"] = context.get("callback_url")
+        result["prompt_source"] = context.get("prompt_source")
+        result["updated_at"] = _utc_now_iso()
+
     openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     conversation_history = [{"role": "system", "content": system_prompt}]
 
@@ -764,6 +1079,9 @@ async def websocket_endpoint(twilio_ws: WebSocket):
         logger.info(f"User said: {transcript}")
         transcript_log.append({"role": "user", "content": transcript, "timestamp": asyncio.get_event_loop().time()})
         conversation_history.append({"role": "user", "content": transcript})
+        if call_sid and call_sid in CALL_RESULTS:
+            CALL_RESULTS[call_sid]["transcript"] = list(transcript_log)
+            CALL_RESULTS[call_sid]["updated_at"] = _utc_now_iso()
 
         # Limit conversation history to avoid exceeding model context
         if len(conversation_history) > MAX_HISTORY:
@@ -791,6 +1109,10 @@ async def websocket_endpoint(twilio_ws: WebSocket):
             logger.info(f"AI response: {ai_text}")
             transcript_log.append({"role": "assistant", "content": ai_text, "timestamp": asyncio.get_event_loop().time()})
             conversation_history.append({"role": "assistant", "content": ai_text})
+
+            if call_sid and call_sid in CALL_RESULTS:
+                CALL_RESULTS[call_sid]["transcript"] = list(transcript_log)
+                CALL_RESULTS[call_sid]["updated_at"] = _utc_now_iso()
 
             if stream_sid:
                 tts_playing.set()
@@ -831,7 +1153,7 @@ async def websocket_endpoint(twilio_ws: WebSocket):
 
     async def twilio_receiver():
         """Receive messages from Twilio."""
-        nonlocal stream_sid, call_sid, task_name, task_config
+        nonlocal stream_sid, call_sid, task_name, task_config, system_prompt
         try:
             while not stop_event.is_set():
                 message = await twilio_ws.receive_text()
@@ -841,9 +1163,26 @@ async def websocket_endpoint(twilio_ws: WebSocket):
                     logger.info("Twilio: connected")
                 elif data['event'] == 'start':
                     stream_sid = data['start']['streamSid']
-                    call_sid = data['start'].get('callSid')
+                    twilio_call_sid = data['start'].get('callSid')
+                    if twilio_call_sid:
+                        call_sid = twilio_call_sid
                     logger.info(f"Twilio: stream started (stream={stream_sid}, call={call_sid})")
-                    
+
+                    # Load outbound prompt context if this is an outbound call.
+                    if call_sid and call_sid in OUTBOUND_CONTEXTS:
+                        context = OUTBOUND_CONTEXTS[call_sid]
+                        system_prompt = context.get("system_prompt") or SYSTEM_PROMPT
+                        conversation_history[0] = {"role": "system", "content": system_prompt}
+                        result = CALL_RESULTS.setdefault(
+                            call_sid,
+                            {"call_sid": call_sid, "transcript": [], "stream_ended": False},
+                        )
+                        result["to"] = context.get("to")
+                        result["prompt_source"] = context.get("prompt_source")
+                        result["callback_url"] = context.get("callback_url")
+                        result["updated_at"] = _utc_now_iso()
+                        logger.info("Applied outbound context for %s", call_sid)
+
                     # Look up task info using call_sid
                     if call_sid and call_sid in active_calls:
                         call_info = active_calls[call_sid]
@@ -962,14 +1301,24 @@ async def websocket_endpoint(twilio_ws: WebSocket):
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
     finally:
-        # Save call transcript if this was an outbound task call
-        if call_sid and transcript_log:
+        if call_sid and (call_sid in OUTBOUND_CONTEXTS or call_sid in CALL_RESULTS):
+            result = CALL_RESULTS.setdefault(
+                call_sid,
+                {"call_sid": call_sid, "transcript": [], "stream_ended": False},
+            )
+            result["stream_ended"] = True
+            result["transcript"] = list(transcript_log)
+            result["conversation"] = conversation_history[1:]  # Skip system prompt
+            result["updated_at"] = _utc_now_iso()
+            await finalize_outbound_result(call_sid, "websocket-disconnect")
+        elif call_sid and transcript_log:
+            # Legacy behavior for non-outbound tracked calls.
             result = {
                 "call_sid": call_sid,
                 "task": task_name,
                 "transcript": transcript_log,
                 "conversation": conversation_history[1:],  # Skip system prompt
-                "completed": True
+                "completed": True,
             }
             file_path = save_call_result(call_sid, result)
             logger.info(f"Call transcript saved to {file_path}")
