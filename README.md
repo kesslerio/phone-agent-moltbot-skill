@@ -1,4 +1,4 @@
-# Phone Agent Moltbot Skill
+# Phone Agent OpenClaw Skill
 
 A real-time AI voice agent that handles incoming phone calls using Twilio, transcribes speech with Deepgram, generates responses via OpenAI, and speaks back with ElevenLabs text-to-speech.
 
@@ -104,7 +104,7 @@ You are {agent_name}, {owner_name} personal assistant.
 Speak in {language} with precision and clarity.
 ```
 
-Or add to `~/.moltbot/.env` or `~/.clawdbot/.env`:
+Or add to legacy `~/.moltbot/.env` or `~/.clawdbot/.env`:
 
 ```
 DEEPGRAM_API_KEY=your-key
@@ -201,9 +201,9 @@ actions:
   - book_reservation
 ```
 
-## Integration with Moltbot
+## Integration with OpenClaw
 
-Add this skill to your Moltbot configuration:
+Add this skill to your OpenClaw configuration:
 
 ```json
 {
@@ -236,7 +236,7 @@ phone-agent-moltbot-skill/
 │   └── get_quote.yaml         # Example task definitions
 ├── calls/                     # Recording storage directory
 ├── references/                # Supporting documentation
-├── SKILL.md                   # Moltbot skill manifest
+├── SKILL.md                   # OpenClaw skill manifest
 ├── README.md                  # This file
 └── LICENSE                    # MIT License
 ```
@@ -361,7 +361,7 @@ Contributions welcome! Please:
 
 - MCP Server: [Deepgram](https://deepgram.com/) | [OpenAI](https://openai.com/) | [ElevenLabs](https://elevenlabs.io/)
 - Twilio Docs: [Voice API](https://www.twilio.com/docs/voice)
-- Moltbot: [Documentation](https://moltbot.io/)
+- OpenClaw: [legacy Moltbot docs](https://moltbot.io/)
 
 ## Requirements
 
