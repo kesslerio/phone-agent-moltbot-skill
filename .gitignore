@@ -53,3 +53,6 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+.ai/
+.worktrees/
