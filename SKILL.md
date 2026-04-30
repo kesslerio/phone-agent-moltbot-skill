@@ -31,7 +31,7 @@ Twilio (Phone) <--> WebSocket (Audio) <--> [Local Server] <--> Deepgram (STT)
     pip install -r scripts/requirements.txt
     ```
 
-2.  **Set Environment Variables** (in `~/.moltbot/.env`, `~/.clawdbot/.env`, or export):
+2.  **Set Environment Variables** (in legacy `~/.moltbot/.env`, `~/.clawdbot/.env`, or export):
     ```bash
     export DEEPGRAM_API_KEY="your_key"
     export OPENAI_API_KEY="your_key"
